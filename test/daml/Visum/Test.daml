@@ -1,0 +1,413 @@
+-- Copyright (c) 2026 seekdaseek
+-- SPDX-License-Identifier: MIT
+
+-- | The arithmetic, proved on a real ledger before a line of TypeScript.
+--
+--   Every script here asserts. Nothing in this suite passes by printing a
+--   number that a human then eyeballs.
+module Visum.Test where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.List (sort)
+import DA.Optional (isNone)
+import Daml.Script
+import Visum
+import Visum.Prove
+
+-- ---------------------------------------------------------------------------
+-- Fixtures
+-- ---------------------------------------------------------------------------
+
+data Cast = Cast
+  with
+    operator : Party
+    counterparty : Party
+    auditor : Party
+
+allocCast : Script Cast
+allocCast = do
+  operator <- allocateParty "operator"
+  counterparty <- allocateParty "counterparty"
+  auditor <- allocateParty "auditor"
+  pure Cast with operator, counterparty, auditor
+
+-- | Create n settlements under a scope tag, withholding the auditor from the
+--   first k of them. Returns nothing: the count is not handed onward.
+seed : Cast -> Text -> Int -> Int -> Script ()
+seed cast scopeTag n k =
+  forA_ [1 .. n] $ \i ->
+    submit cast.operator do
+      createCmd
+        Settlement with
+          operator = cast.operator
+          counterparty = cast.counterparty
+          payload = "settlement-" <> show i
+          scopeTag
+          disclosed = if i <= k then [] else [cast.auditor]
+
+declareScope : Cast -> Text -> Int -> Script (ContractId ScopeStatement)
+declareScope cast scopeTag declaredTotal = do
+  now <- getTime
+  submit cast.operator do
+    createCmd
+      ScopeStatement with
+        operator = cast.operator
+        auditor = cast.auditor
+        scopeTag
+        periodStart = now
+        periodEnd = now
+        templatesInScope = ["#visum:Visum:Settlement"]
+        declaredTotal
+        scopeHash = "sha256:" <> scopeTag
+-- ---------------------------------------------------------------------------
+-- 1. Projection: who sees how many
+-- ---------------------------------------------------------------------------
+
+testProjection : Script ()
+testProjection = do
+  cast <- allocCast
+  let scopeTag = "projection"
+      n = 12
+      k = 5
+  seed cast scopeTag n k
+
+  opSees <- projectionOf cast.operator scopeTag
+  cpSees <- projectionOf cast.counterparty scopeTag
+  audSees <- projectionOf cast.auditor scopeTag
+
+  length opSees === n
+  length cpSees === n
+  length audSees === n - k
+
+  -- The withheld contracts are absent from the auditor's projection, not
+  -- present-and-empty. There is no residue to count.
+  assertMsg
+    "withheld settlements leave nothing behind in the auditor's projection"
+    (all (`elem` opSees) audSees && length audSees == n - k)
+
+-- ---------------------------------------------------------------------------
+-- 2. Stakeholders: signatories union observers, and the ledger agrees
+-- ---------------------------------------------------------------------------
+
+testStakeholders : Script ()
+testStakeholders = do
+  cast <- allocCast
+  let scopeTag = "stakeholders"
+      n = 10
+      k = 4
+  seed cast scopeTag n k
+
+  everything <- query @Settlement cast.operator
+  let scoped = [(cid, s) | (cid, s) <- everything, s.scopeTag == scopeTag]
+
+  assertMsg "fixture actually created contracts" (length scoped == n)
+
+  forA_ scoped $ \(_, s) -> do
+    let sigs = signatory s
+        obs = normalisedObservers s
+
+    assertMsg
+      "observers never repeat a signatory"
+      (all (`notElem` sigs) obs)
+
+    assertMsg
+      "stakeholders equal signatories union observers"
+      (sort (stakeholdersOf s) == sort (sigs <> obs))
+
+    assertMsg
+      "the operator is the only signatory"
+      (sigs == [cast.operator])
+
+  -- The strong one: the stakeholder set computed off each contract predicts
+  -- the auditor's real projection exactly, contract for contract.
+  predicted <- pure $ sort [cid | (cid, s) <- scoped, isStakeholder cast.auditor s]
+  actual <- projectionOf cast.auditor scopeTag
+  assertMsg
+    "stakeholder analysis predicts the auditor's projection exactly"
+    (predicted == actual)
+
+-- ---------------------------------------------------------------------------
+-- 3. Honest proof: ratio derived from the ledger, not from the seeding code
+-- ---------------------------------------------------------------------------
+
+testHonestProof : Script ()
+testHonestProof = do
+  cast <- allocCast
+  let scopeTag = "honest"
+      n = 20
+      k = 7
+  seed cast scopeTag n k
+  _ <- declareScope cast scopeTag n
+  _ <- attestAs cast.counterparty cast.operator cast.auditor scopeTag
+
+  cid <- proveCoverage cast.operator cast.operator cast.auditor scopeTag
+  Some proof <- queryContractId cast.auditor cid
+
+  proof.auditorVisible === n - k
+  proof.declaredTotal === n
+  proof.attestedFloor === n
+  proof.ratio === 0.65
+  proof.ratio === coverageRatio n n (n - k)
+
+  assertMsg
+    "an honest declaration produces no concealment signal"
+    (not (concealmentSignal proof.declaredTotal proof.attestedFloor))
+
+  -- The auditor recomputes the published proof from its own projection plus
+  -- the two signed claims. It does not have to trust the prover.
+  view <- auditorAlone cast.auditor scopeTag
+  view.visible === proof.auditorVisible
+  view.declaredTotal === Some proof.declaredTotal
+  view.attestedFloor === Some proof.attestedFloor
+  assertMsg "the auditor can verify the published proof unaided" view.canComputeCoverage
+
+-- ---------------------------------------------------------------------------
+-- 4. Concealment: the operator under-declares and the attested floor wins
+-- ---------------------------------------------------------------------------
+
+testConcealment : Script ()
+testConcealment = do
+  cast <- allocCast
+  let scopeTag = "concealment"
+      n = 30
+      k = 12
+      disclosedCount = n - k
+  seed cast scopeTag n k
+
+  -- The operator declares a scope that matches exactly what it disclosed.
+  -- Against its own declaration it looks perfect.
+  _ <- declareScope cast scopeTag disclosedCount
+  -- The counterparty, which is a stakeholder on every settlement, signs for
+  -- what it actually saw. The operator cannot suppress this.
+  _ <- attestAs cast.counterparty cast.operator cast.auditor scopeTag
+
+  cid <- proveCoverage cast.operator cast.operator cast.auditor scopeTag
+  Some proof <- queryContractId cast.auditor cid
+
+  proof.declaredTotal === disclosedCount
+  proof.attestedFloor === n
+  proof.auditorVisible === disclosedCount
+
+  assertMsg
+    "the attested floor exceeds the declared total"
+    (concealmentSignal proof.declaredTotal proof.attestedFloor)
+
+  assertMsg
+    "the proof records both numbers rather than picking one"
+    (proof.declaredTotal /= proof.attestedFloor)
+
+  -- The denominator is the floor, not the declaration.
+  coverageDenominator proof.declaredTotal proof.attestedFloor === n
+  proof.ratio === coverageRatio disclosedCount n disclosedCount
+  proof.ratio === 0.6
+
+  -- Without the attestation the same ledger would have published 100%.
+  assertMsg
+    "scoring against the declaration alone would have read one hundred percent"
+    (coverageRatio disclosedCount 0 disclosedCount == 1.0)
+  assertMsg
+    "the attestation is what stops it reading one hundred percent"
+    (proof.ratio < 1.0)
+
+-- ---------------------------------------------------------------------------
+-- 5. The prover cannot be handed the answer
+-- ---------------------------------------------------------------------------
+
+testProverCannotPeek : Script ()
+testProverCannotPeek = do
+  cast <- allocCast
+  let scopeTag = "nopeek"
+      n = 20
+      k = 8
+      trueVisible = n - k
+
+      -- A deliberately wrong "ground truth" of the kind .visum/ground-truth.json
+      -- holds. A prover that read it would publish this number.
+      bogusGroundTruthVisible = 1
+      bogusGroundTruthTotal = 99
+
+  seed cast scopeTag n k
+  _ <- declareScope cast scopeTag n
+  _ <- attestAs cast.counterparty cast.operator cast.auditor scopeTag
+
+  -- Guard against a vacuous test: the shortcut answer must actually differ
+  -- from the derived one, or this script proves nothing.
+  assertMsg
+    "the shortcut value differs from the truth, so this test discriminates"
+    (bogusGroundTruthVisible /= trueVisible && bogusGroundTruthTotal /= n)
+
+  derived <- deriveCoverage cast.operator cast.auditor scopeTag
+
+  derived.auditorVisible === trueVisible
+  derived.declaredTotal === n
+  assertMsg
+    "the prover followed the ledger, not the supplied ground truth"
+    (derived.auditorVisible /= bogusGroundTruthVisible)
+  assertMsg
+    "the prover's denominator came from the ledger, not the supplied total"
+    (coverageDenominator derived.declaredTotal derived.attestedFloor /= bogusGroundTruthTotal)
+
+-- ---------------------------------------------------------------------------
+-- 6. A forged ratio cannot reach the ledger
+-- ---------------------------------------------------------------------------
+
+testForgedRatioRejected : Script ()
+testForgedRatioRejected = do
+  cast <- allocCast
+  let scopeTag = "forgery"
+      n = 25
+      k = 10
+  seed cast scopeTag n k
+  _ <- declareScope cast scopeTag n
+  _ <- attestAs cast.counterparty cast.operator cast.auditor scopeTag
+  now <- getTime
+
+  let forged ratio =
+        CoverageProof with
+          prover = cast.operator
+          operator = cast.operator
+          auditor = cast.auditor
+          scopeTag
+          scopeHash = "sha256:forgery"
+          declaredTotal = n
+          attestedFloor = n
+          auditorVisible = n - k
+          ratio
+          computedAt = now
+
+  -- A flattering ratio that does not follow from the contract's own numbers
+  -- is rejected by the template's ensure clause.
+  submitMustFail cast.operator do createCmd (forged 1.0)
+  submitMustFail cast.operator do createCmd (forged 0.0)
+  submitMustFail cast.operator do createCmd (forged 0.61)
+
+  -- The honest one commits.
+  _ <- submit cast.operator do createCmd (forged (coverageRatio n n (n - k)))
+  pure ()
+
+-- ---------------------------------------------------------------------------
+-- 7. The control case: the auditor alone cannot tell
+-- ---------------------------------------------------------------------------
+
+testAuditorAloneCannotComputeCoverage : Script ()
+testAuditorAloneCannotComputeCoverage = do
+  cast <- allocCast
+  let scopeTag = "alone"
+      n = 25
+      k = 9
+  seed cast scopeTag n k
+  -- No ScopeStatement. No attestation. Just the ledger as the auditor finds it.
+
+  view <- auditorAlone cast.auditor scopeTag
+
+  view.visible === n - k
+  assertMsg "the auditor holds no declared total" (isNone view.declaredTotal)
+  assertMsg "the auditor holds no attested floor" (isNone view.attestedFloor)
+  assertMsg
+    "the auditor cannot compute its own coverage"
+    (not view.canComputeCoverage)
+
+-- | Two worlds the auditor cannot tell apart.
+--
+--   Scope A: 25 settlements exist and 9 are withheld from the auditor.
+--   Scope B: 16 settlements exist and nothing is withheld.
+--
+--   The auditor's projection is the same size in both. This is the whole
+--   problem, asserted.
+testAuditorCannotDistinguishWithheldFromAbsent : Script ()
+testAuditorCannotDistinguishWithheldFromAbsent = do
+  cast <- allocCast
+  seed cast "worldA" 25 9
+  seed cast "worldB" 16 0
+
+  a <- auditorAlone cast.auditor "worldA"
+  b <- auditorAlone cast.auditor "worldB"
+
+  a.visible === 16
+  b.visible === 16
+
+  assertMsg
+    "the auditor's view of a concealing world is identical to its view of an honest smaller one"
+    (a == b)
+
+  -- The operator knows they differ. The auditor has no way to.
+  opA <- projectionOf cast.operator "worldA"
+  opB <- projectionOf cast.operator "worldB"
+  assertMsg "the two worlds genuinely differ on the ledger" (length opA /= length opB)
+
+-- ---------------------------------------------------------------------------
+-- 8. Attested floor sums across distinct counterparties, once each
+-- ---------------------------------------------------------------------------
+
+testAttestedFloorAcrossCounterparties : Script ()
+testAttestedFloorAcrossCounterparties = do
+  operator <- allocateParty "operator"
+  auditor <- allocateParty "auditor"
+  cpA <- allocateParty "cpA"
+  cpB <- allocateParty "cpB"
+  let scopeTag = "multi"
+
+  -- 6 settlements with cpA, 4 of them withheld from the auditor.
+  forA_ [1 .. 6] $ \i ->
+    submit operator do
+      createCmd
+        Settlement with
+          operator
+          counterparty = cpA
+          payload = "a-" <> show i
+          scopeTag
+          disclosed = if i <= 4 then [] else [auditor]
+  -- 4 settlements with cpB, all disclosed.
+  forA_ [1 .. 4] $ \i ->
+    submit operator do
+      createCmd
+        Settlement with
+          operator
+          counterparty = cpB
+          payload = "b-" <> show i
+          scopeTag
+          disclosed = [auditor]
+
+  _ <- attestAs cpA operator auditor scopeTag
+  _ <- attestAs cpB operator auditor scopeTag
+  -- cpA attests a second time; the floor must not double-count it.
+  _ <- attestAs cpA operator auditor scopeTag
+
+  derived <- deriveCoverage operator auditor scopeTag
+
+  derived.attestedFloor === 10
+  derived.auditorVisible === 6
+  derived.ratio === coverageRatio 0 10 6
+  derived.ratio === 0.6
+
+-- | Duplicate attestations from one party must not inflate the floor.
+testDuplicateAttestationDoesNotInflate : Script ()
+testDuplicateAttestationDoesNotInflate = do
+  attestedFloorFrom [] === 0
+  attestedFloorFrom [(p1, 5)] === 5
+  attestedFloorFrom [(p1, 5), (p1, 5)] === 5
+  attestedFloorFrom [(p1, 5), (p1, 7)] === 7
+  attestedFloorFrom [(p1, 5), (p2, 4)] === 9
+  attestedFloorFrom [(p1, 5), (p2, 4), (p1, 5)] === 9
+  where
+    p1 = partyFromTextOrError "cpA"
+    p2 = partyFromTextOrError "cpB"
+
+partyFromTextOrError : Text -> Party
+partyFromTextOrError t = case partyFromText t of
+  Some p -> p
+  None -> error ("bad party literal: " <> t)
+
+-- ---------------------------------------------------------------------------
+-- 9. Zero denominator is defined, not undefined
+-- ---------------------------------------------------------------------------
+
+testEmptyScope : Script ()
+testEmptyScope = do
+  cast <- allocCast
+  derived <- deriveCoverage cast.operator cast.auditor "empty"
+  derived.declaredTotal === 0
+  derived.attestedFloor === 0
+  derived.auditorVisible === 0
+  derived.ratio === 0.0

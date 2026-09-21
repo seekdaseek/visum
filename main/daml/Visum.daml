@@ -1,0 +1,172 @@
+-- Copyright (c) 2026 seekdaseek
+-- SPDX-License-Identifier: MIT
+
+-- | visum measures the gap between what an operator declares and what an
+--   auditor can actually see on a Canton ledger, and publishes the result as a
+--   signed coverage ratio.
+--
+--   A party sees only contracts where it is a stakeholder. Excluded actions are
+--   dropped from its projection entirely, so an auditor cannot distinguish
+--   "no event existed" from "an event existed and I was not made a stakeholder".
+module Visum where
+
+import DA.List (dedup)
+
+-- ---------------------------------------------------------------------------
+-- Stakeholder arithmetic
+-- ---------------------------------------------------------------------------
+
+-- | Observers with signatories removed.
+--
+--   This mirrors the JSON Ledger API exactly: CreatedEvent.observers is
+--   documented as "This field never contains parties that are signatories",
+--   and the participant normalises the set before serving it. Computing the
+--   same normalisation here keeps the Daml model and the TypeScript client
+--   answering the same question.
+normalisedObservers : (HasSignatory t, HasObserver t) => t -> [Party]
+normalisedObservers c = filter (`notElem` signatory c) (dedup (observer c))
+
+-- | The ledger's own answer for who was made a stakeholder on a contract:
+--   signatories union observers. This is the set the active-contract-set
+--   stream filters on, so it is the set that decides visibility.
+stakeholdersOf : (HasSignatory t, HasObserver t) => t -> [Party]
+stakeholdersOf c = dedup (signatory c) ++ normalisedObservers c
+
+-- | Whether a party was made a stakeholder on a contract, and would therefore
+--   find it in its own ACS.
+isStakeholder : (HasSignatory t, HasObserver t) => Party -> t -> Bool
+isStakeholder p c = p `elem` stakeholdersOf c
+
+-- ---------------------------------------------------------------------------
+-- Coverage arithmetic
+--
+-- These are the canonical definitions. The Daml Script suite and the
+-- TypeScript CLI must both agree with them; the CoverageProof `ensure` below
+-- makes the ledger enforce it.
+-- ---------------------------------------------------------------------------
+
+-- | The denominator visum scores against.
+--
+--   The operator's declared total is a claim, never truth. Counterparty
+--   attestations bound the true total from below and the operator cannot
+--   suppress them, because the counterparty signs them. Where the two
+--   disagree, the larger wins.
+coverageDenominator : Int -> Int -> Int
+coverageDenominator declaredTotal attestedFloor = max declaredTotal attestedFloor
+
+-- | auditorVisible over max(declaredTotal, attestedFloor).
+--
+--   A zero denominator means nothing was declared and nothing was attested, so
+--   there is no universe to score against; the ratio is defined as 0.0 rather
+--   than left undefined.
+coverageRatio : Int -> Int -> Int -> Decimal
+coverageRatio declaredTotal attestedFloor auditorVisible =
+  let d = coverageDenominator declaredTotal attestedFloor
+  in if d <= 0
+       then 0.0
+       else intToDecimal auditorVisible / intToDecimal d
+
+-- | The concealment signal: the counterparties between them have signed for
+--   more settlements than the operator declared exist.
+concealmentSignal : Int -> Int -> Bool
+concealmentSignal declaredTotal attestedFloor = attestedFloor > declaredTotal
+
+-- | Sum the attested counts, taking the highest count per attestor.
+--
+--   Counting per attestor rather than per contract keeps a party that attests
+--   twice from inflating the floor, while still summing across distinct
+--   counterparties whose settlement sets are disjoint.
+attestedFloorFrom : [(Party, Int)] -> Int
+attestedFloorFrom claims =
+    foldl (\acc p -> acc + bestFor p) 0 (dedup (map fst claims))
+  where
+    bestFor p = foldl (\m (q, c) -> if q == p && c > m then c else m) 0 claims
+
+-- ---------------------------------------------------------------------------
+-- Templates
+-- ---------------------------------------------------------------------------
+
+-- | A settlement between an operator and a counterparty.
+--
+--   `disclosed` is the only field the operator manipulates to conceal. Auditor
+--   present means disclosed, auditor absent means withheld; nothing else about
+--   the contract differs. Because `disclosed` is a per-instance field, two
+--   contracts of this one template genuinely carry different observer sets.
+--   That is the mechanism visum both uses and measures.
+template Settlement
+  with
+    operator : Party
+    counterparty : Party
+    payload : Text
+    scopeTag : Text
+    disclosed : [Party]
+  where
+    signatory operator
+    observer counterparty, disclosed
+
+-- | The operator's declaration of what the period contains.
+--
+--   visum treats this as a claim and never as truth.
+template ScopeStatement
+  with
+    operator : Party
+    auditor : Party
+    scopeTag : Text
+    periodStart : Time
+    periodEnd : Time
+    templatesInScope : [Text]
+    declaredTotal : Int
+    scopeHash : Text
+  where
+    signatory operator
+    observer auditor
+    ensure declaredTotal >= 0
+
+-- | A counterparty's signed count of the settlements it is a stakeholder on.
+--
+--   The strong denominator. A counterparty is a stakeholder on its own
+--   settlements by construction and can count them without the operator's
+--   help. The operator is an observer so that it can read the floor when
+--   proving, but it is not a signatory: it can neither forge an attestation
+--   nor archive one on its own authority.
+template PartyAttestation
+  with
+    attestor : Party
+    operator : Party
+    auditor : Party
+    scopeTag : Text
+    seenCount : Int
+  where
+    signatory attestor
+    observer auditor, operator
+    ensure seenCount >= 0
+
+-- | The published result.
+--
+--   Where attestedFloor exceeds declaredTotal the proof records both numbers
+--   rather than picking one. That divergence is the concealment signal.
+--
+--   The `ensure` clause binds the ratio to the three integers in the same
+--   contract, so a proof carrying a ratio that does not follow from its own
+--   numbers cannot be committed at all. Every input is independently visible
+--   to the auditor, so the auditor can recompute this proof without trusting
+--   the prover.
+template CoverageProof
+  with
+    prover : Party
+    operator : Party
+    auditor : Party
+    scopeTag : Text
+    scopeHash : Text
+    declaredTotal : Int
+    attestedFloor : Int
+    auditorVisible : Int
+    ratio : Decimal
+    computedAt : Time
+  where
+    signatory prover
+    observer auditor, operator
+    ensure declaredTotal >= 0
+        && attestedFloor >= 0
+        && auditorVisible >= 0
+        && ratio == coverageRatio declaredTotal attestedFloor auditorVisible

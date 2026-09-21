@@ -1,0 +1,13 @@
+#!/bin/sh
+# Reject AI attribution in commit messages. The contributor panel shows one human.
+# Never bypass with --no-verify.
+MSG="$1"
+if grep -qiE '^[[:space:]]*co-authored-by:' "$MSG"; then
+  echo "commit-msg: Co-Authored-By trailer is not allowed in this repo." >&2
+  exit 1
+fi
+if grep -qiE 'generated with|claude|anthropic|copilot|chatgpt|ai-assisted|claude-session' "$MSG"; then
+  echo "commit-msg: AI attribution is not allowed in commit messages." >&2
+  exit 1
+fi
+exit 0

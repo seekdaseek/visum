@@ -1,0 +1,130 @@
+-- Copyright (c) 2026 seekdaseek
+-- SPDX-License-Identifier: MIT
+
+-- | The prover, and the auditor's unaided view.
+--
+--   Every function in this module takes parties and a scope tag and nothing
+--   else. None of them accepts an Int. There is therefore no parameter through
+--   which a caller could hand the prover the answer it is supposed to derive:
+--   the shortcut is excluded by the type, not by discipline.
+module Visum.Prove where
+
+import DA.List (sort)
+import Daml.Script
+import Visum
+
+-- | Everything the prover derived from ledger state alone.
+data Derived = Derived
+  with
+    declaredTotal : Int
+    attestedFloor : Int
+    auditorVisible : Int
+    ratio : Decimal
+    scopeHash : Text
+  deriving (Eq, Show)
+
+-- | What an auditor can determine on its own, with no help from anyone.
+data AuditorView = AuditorView
+  with
+    visible : Int
+    declaredTotal : Optional Int
+    attestedFloor : Optional Int
+    canComputeCoverage : Bool
+  deriving (Eq, Show)
+
+-- | Derive coverage for a scope from the ledger.
+--
+--   auditorVisible is counted by reading the stakeholder set off each
+--   settlement the prover can see, exactly as the TypeScript client reads
+--   signatories and observers off each CreatedEvent. It is never counted by
+--   asking the auditor and never taken from a seeding parameter.
+deriveCoverage : Party -> Party -> Text -> Script Derived
+deriveCoverage prover auditor scopeTag = do
+  settlements <- inScope <$> query @Settlement prover
+  scopes <- inScope <$> query @ScopeStatement prover
+  atts <- inScope <$> query @PartyAttestation prover
+
+  let auditorVisible = length [() | (_, s) <- settlements, isStakeholder auditor s]
+      declaredTotal = foldl (\m (_, s) -> max m s.declaredTotal) 0 scopes
+      scopeHash = foldl (\h (_, s) -> if h == "" then s.scopeHash else h) "" scopes
+      attestedFloor = attestedFloorFrom [(a.attestor, a.seenCount) | (_, a) <- atts]
+
+  pure
+    Derived with
+      declaredTotal
+      attestedFloor
+      auditorVisible
+      ratio = coverageRatio declaredTotal attestedFloor auditorVisible
+      scopeHash
+  where
+    inScope : HasField "scopeTag" a Text => [(b, a)] -> [(b, a)]
+    inScope = filter (\(_, x) -> x.scopeTag == scopeTag)
+
+-- | Derive, then commit the result as a CoverageProof.
+proveCoverage : Party -> Party -> Party -> Text -> Script (ContractId CoverageProof)
+proveCoverage prover operator auditor scopeTag = do
+  d <- deriveCoverage prover auditor scopeTag
+  now <- getTime
+  submit prover do
+    createCmd
+      CoverageProof with
+        prover
+        operator
+        auditor
+        scopeTag
+        scopeHash = d.scopeHash
+        declaredTotal = d.declaredTotal
+        attestedFloor = d.attestedFloor
+        auditorVisible = d.auditorVisible
+        ratio = d.ratio
+        computedAt = now
+
+-- | A counterparty counts its own settlements and signs for them.
+--
+--   The count comes from the counterparty's own projection. The operator
+--   cannot influence it and cannot suppress the result, because the
+--   counterparty is the signatory.
+attestAs : Party -> Party -> Party -> Text -> Script (ContractId PartyAttestation)
+attestAs attestor operator auditor scopeTag = do
+  mine <- query @Settlement attestor
+  submit attestor do
+    createCmd
+      PartyAttestation with
+        attestor
+        operator
+        auditor
+        scopeTag
+        seenCount = length [() | (_, s) <- mine, s.scopeTag == scopeTag]
+
+-- | The control case: what the auditor can determine with only its own
+--   projection to go on.
+auditorAlone : Party -> Text -> Script AuditorView
+auditorAlone auditor scopeTag = do
+  mine <- query @Settlement auditor
+  scopes <- query @ScopeStatement auditor
+  atts <- query @PartyAttestation auditor
+
+  let visible = length [() | (_, s) <- mine, s.scopeTag == scopeTag]
+      declaredTotals = [s.declaredTotal | (_, s) <- scopes, s.scopeTag == scopeTag]
+      claims = [(a.attestor, a.seenCount) | (_, a) <- atts, a.scopeTag == scopeTag]
+      declaredTotal = case declaredTotals of
+        [] -> None
+        (x :: _) -> Some x
+      attestedFloor = if null claims then None else Some (attestedFloorFrom claims)
+
+  pure
+    AuditorView with
+      visible
+      declaredTotal
+      attestedFloor
+      -- With no declared scope and no attestation the auditor holds a
+      -- numerator and no denominator. It cannot tell a ledger where nothing
+      -- happened from one where everything was withheld.
+      canComputeCoverage = declaredTotal /= None || attestedFloor /= None
+
+-- | The contract ids of a party's own projection, sorted, for comparing two
+--   projections for equality.
+projectionOf : Party -> Text -> Script [ContractId Settlement]
+projectionOf p scopeTag = do
+  mine <- query @Settlement p
+  pure $ sort [cid | (cid, s) <- mine, s.scopeTag == scopeTag]

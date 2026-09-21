@@ -1,0 +1,8 @@
+.daml/
+.visum/
+node_modules/
+dist/
+*.dar
+log/
+canton-*.log
+.DS_Store
