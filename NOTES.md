@@ -147,6 +147,43 @@ Do not use package ids.
 - `dpm build` from the repo root needs `--all` when a `multi-package.yaml` is
   present and no `daml.yaml` is.
 
+## Settled design decisions — do not re-litigate
+
+### PartyAttestation is observed by the operator, and that is safe
+
+`PartyAttestation` is `signatory attestor, observer auditor, operator`. The
+brief originally specified `observer auditor` only, under which the operator is
+not a stakeholder, cannot read attestations at all, and therefore cannot
+compute `attestedFloor` when proving. Widening the observer set is deliberate
+and approved. It is safe for four independent reasons:
+
+1. **Reading the floor cannot help a dishonest operator.** The denominator is
+   `max(declaredTotal, attestedFloor)`. An operator that reads the attested
+   floor can only respond by raising its own declared total, which raises the
+   denominator and *lowers* its own ratio. There is no move that improves its
+   score.
+2. **The operator cannot shrink the floor.** It is not a signatory, so it can
+   neither forge an attestation nor archive an existing one on its own
+   authority. The floor is counterparty-controlled in both directions.
+3. **It reveals nothing new.** A counterparty attesting a count to the operator
+   discloses a number the operator already knows — it was the other side of
+   every settlement in that count.
+4. **Integrity does not rest on the operator's ignorance.** It rests on the
+   prover being untrusted and every input to the proof being independently
+   visible to the auditor, so the auditor can recompute the published proof
+   without taking the prover's word for anything. `testHonestProof` asserts
+   exactly that recomputation.
+
+### CoverageProof.ensure binds ratio to its own numbers
+
+`CoverageProof` carries
+`ensure ... && ratio == coverageRatio declaredTotal attestedFloor auditorVisible`.
+Also not in the original brief, also approved. A proof whose ratio does not
+follow from the three integers in the same contract is rejected at commit time
+rather than caught by a reader. `testForgedRatioRejected` proves the ledger
+refuses `1.0`, `0.0` and `0.61` on a contract whose honest ratio is `0.6`, and
+accepts only the derived value.
+
 ## Decimal, and the "no tolerances" acceptance test
 
 `CoverageProof.ratio` is a Daml `Decimal`, which is `Numeric 10`. A
