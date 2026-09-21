@@ -71,6 +71,20 @@ coverageRatio declaredTotal attestedFloor auditorVisible =
 concealmentSignal : Int -> Int -> Bool
 concealmentSignal declaredTotal attestedFloor = attestedFloor > declaredTotal
 
+-- | Whether every counterparty the scope said would attest actually did.
+--
+--   A ratio carries completely different weight depending on how much of the
+--   expected counterparty set stood behind it. "0.60, attested by 3 of 3" and
+--   "0.60, attested by 1 of 4" are the same number and not the same claim.
+fullyAttested : [Party] -> [Party] -> Bool
+fullyAttested expectedAttestors attestors =
+  all (`elem` attestors) (dedup expectedAttestors)
+
+-- | Expected attestors that did not attest. Empty means fully attested.
+missingAttestors : [Party] -> [Party] -> [Party]
+missingAttestors expectedAttestors attestors =
+  filter (`notElem` attestors) (dedup expectedAttestors)
+
 -- | Sum the attested counts, taking the highest count per attestor.
 --
 --   Counting per attestor rather than per contract keeps a party that attests
@@ -116,6 +130,11 @@ template ScopeStatement
     periodEnd : Time
     templatesInScope : [Text]
     declaredTotal : Int
+    -- | The counterparty set the operator says this scope covers. Declaring
+    --   it makes a missing attestation visible: a reader can tell that three
+    --   of four counterparties stayed silent, rather than having to assume
+    --   the attested floor was complete.
+    expectedAttestors : [Party]
     scopeHash : Text
   where
     signatory operator
@@ -162,6 +181,19 @@ template CoverageProof
     attestedFloor : Int
     auditorVisible : Int
     ratio : Decimal
+    -- | The counterparties that actually signed an attestation for this
+    --   scope, and the set the ScopeStatement said to expect. Recording both
+    --   is what lets a reader weigh the ratio: the same 0.60 backed by three
+    --   of three counterparties and by one of four are not the same claim.
+    --
+    --   attestorCount may exceed expectedAttestorCount. That is not an error
+    --   and is deliberately not forbidden: it means a counterparty attested
+    --   that the operator did not declare, which is itself a signal that the
+    --   declared counterparty set was incomplete.
+    attestors : [Party]
+    expectedAttestors : [Party]
+    attestorCount : Int
+    expectedAttestorCount : Int
     computedAt : Time
   where
     signatory prover
@@ -170,3 +202,5 @@ template CoverageProof
         && attestedFloor >= 0
         && auditorVisible >= 0
         && ratio == coverageRatio declaredTotal attestedFloor auditorVisible
+        && attestorCount == length (dedup attestors)
+        && expectedAttestorCount == length (dedup expectedAttestors)

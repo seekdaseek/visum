@@ -9,7 +9,7 @@
 --   the shortcut is excluded by the type, not by discipline.
 module Visum.Prove where
 
-import DA.List (sort)
+import DA.List (dedup, sort)
 import Daml.Script
 import Visum
 
@@ -20,6 +20,8 @@ data Derived = Derived
     attestedFloor : Int
     auditorVisible : Int
     ratio : Decimal
+    attestors : [Party]
+    expectedAttestors : [Party]
     scopeHash : Text
   deriving (Eq, Show)
 
@@ -29,6 +31,8 @@ data AuditorView = AuditorView
     visible : Int
     declaredTotal : Optional Int
     attestedFloor : Optional Int
+    attestors : [Party]
+    expectedAttestors : [Party]
     canComputeCoverage : Bool
   deriving (Eq, Show)
 
@@ -48,6 +52,10 @@ deriveCoverage prover auditor scopeTag = do
       declaredTotal = foldl (\m (_, s) -> max m s.declaredTotal) 0 scopes
       scopeHash = foldl (\h (_, s) -> if h == "" then s.scopeHash else h) "" scopes
       attestedFloor = attestedFloorFrom [(a.attestor, a.seenCount) | (_, a) <- atts]
+      -- Who actually signed, read off the ledger. Not who was supposed to.
+      attestors = sort (dedup [a.attestor | (_, a) <- atts])
+      -- Who the operator said would sign, read off its own declaration.
+      expectedAttestors = sort (dedup (concatMap (\(_, sc) -> sc.expectedAttestors) scopes))
 
   pure
     Derived with
@@ -55,6 +63,8 @@ deriveCoverage prover auditor scopeTag = do
       attestedFloor
       auditorVisible
       ratio = coverageRatio declaredTotal attestedFloor auditorVisible
+      attestors
+      expectedAttestors
       scopeHash
   where
     inScope : HasField "scopeTag" a Text => [(b, a)] -> [(b, a)]
@@ -77,6 +87,10 @@ proveCoverage prover operator auditor scopeTag = do
         attestedFloor = d.attestedFloor
         auditorVisible = d.auditorVisible
         ratio = d.ratio
+        attestors = d.attestors
+        expectedAttestors = d.expectedAttestors
+        attestorCount = length d.attestors
+        expectedAttestorCount = length d.expectedAttestors
         computedAt = now
 
 -- | A counterparty counts its own settlements and signs for them.
@@ -107,6 +121,10 @@ auditorAlone auditor scopeTag = do
   let visible = length [() | (_, s) <- mine, s.scopeTag == scopeTag]
       declaredTotals = [s.declaredTotal | (_, s) <- scopes, s.scopeTag == scopeTag]
       claims = [(a.attestor, a.seenCount) | (_, a) <- atts, a.scopeTag == scopeTag]
+      attestors = sort (dedup [a.attestor | (_, a) <- atts, a.scopeTag == scopeTag])
+      expectedAttestors =
+        sort (dedup (concatMap (\(_, sc) -> sc.expectedAttestors)
+                               (filter (\(_, sc) -> sc.scopeTag == scopeTag) scopes)))
       declaredTotal = case declaredTotals of
         [] -> None
         (x :: _) -> Some x
@@ -117,6 +135,8 @@ auditorAlone auditor scopeTag = do
       visible
       declaredTotal
       attestedFloor
+      attestors
+      expectedAttestors
       -- With no declared scope and no attestation the auditor holds a
       -- numerator and no denominator. It cannot tell a ledger where nothing
       -- happened from one where everything was withheld.

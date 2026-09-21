@@ -47,7 +47,12 @@ seed cast scopeTag n k =
           disclosed = if i <= k then [] else [cast.auditor]
 
 declareScope : Cast -> Text -> Int -> Script (ContractId ScopeStatement)
-declareScope cast scopeTag declaredTotal = do
+declareScope cast scopeTag declaredTotal =
+  declareScopeWith cast scopeTag declaredTotal [cast.counterparty]
+
+declareScopeWith :
+  Cast -> Text -> Int -> [Party] -> Script (ContractId ScopeStatement)
+declareScopeWith cast scopeTag declaredTotal expectedAttestors = do
   now <- getTime
   submit cast.operator do
     createCmd
@@ -59,6 +64,7 @@ declareScope cast scopeTag declaredTotal = do
         periodEnd = now
         templatesInScope = ["#visum:Visum:Settlement"]
         declaredTotal
+        expectedAttestors
         scopeHash = "sha256:" <> scopeTag
 -- ---------------------------------------------------------------------------
 -- 1. Projection: who sees how many
@@ -274,6 +280,10 @@ testForgedRatioRejected = do
           attestedFloor = n
           auditorVisible = n - k
           ratio
+          attestors = [cast.counterparty]
+          expectedAttestors = [cast.counterparty]
+          attestorCount = 1
+          expectedAttestorCount = 1
           computedAt = now
 
   -- A flattering ratio that does not follow from the contract's own numbers
@@ -445,3 +455,216 @@ testRatioIsRoundedNotExact = do
   -- Full coverage is exactly 1.0, and nothing exceeds it.
   coverageRatio 50 0 50 === 1.0
   coverageRatio 50 50 50 === 1.0
+
+-- ---------------------------------------------------------------------------
+-- 11. Attestation coverage: the same ratio can carry very different weight
+-- ---------------------------------------------------------------------------
+
+-- | Seed a scope spread over several counterparties.
+--   Each entry is (counterparty, total settlements, how many are withheld).
+seedMulti : Party -> Party -> Text -> [(Party, Int, Int)] -> Script ()
+seedMulti operator auditor scopeTag plan =
+  forA_ plan $ \(cp, total, hidden) ->
+    forA_ [1 .. total] $ \i ->
+      submit operator do
+        createCmd
+          Settlement with
+            operator
+            counterparty = cp
+            payload = scopeTag <> "-" <> show i
+            scopeTag
+            disclosed = if i <= hidden then [] else [auditor]
+
+declareScopeFor :
+  Party -> Party -> Text -> Int -> [Party] -> Script (ContractId ScopeStatement)
+declareScopeFor operator auditor scopeTag declaredTotal expectedAttestors = do
+  now <- getTime
+  submit operator do
+    createCmd
+      ScopeStatement with
+        operator
+        auditor
+        scopeTag
+        periodStart = now
+        periodEnd = now
+        templatesInScope = ["#visum:Visum:Settlement"]
+        declaredTotal
+        expectedAttestors
+        scopeHash = "sha256:" <> scopeTag
+
+-- | Two scopes with identical settlements, identical declarations and
+--   therefore an identical ratio. One is attested by all four counterparties,
+--   the other by one of four.
+--
+--   A reader must be able to tell them apart. Before attestor counts were
+--   recorded, the proof could not.
+testAttestationCoverageIsRecorded : Script ()
+testAttestationCoverageIsRecorded = do
+  operator <- allocateParty "operator"
+  auditor <- allocateParty "auditor"
+  cpA <- allocateParty "cpA"
+  cpB <- allocateParty "cpB"
+  cpC <- allocateParty "cpC"
+  cpD <- allocateParty "cpD"
+
+  -- 20 settlements, 8 withheld from the auditor, 12 visible.
+  let plan = [(cpA, 8, 3), (cpB, 6, 2), (cpC, 4, 2), (cpD, 2, 1)]
+      expected = [cpA, cpB, cpC, cpD]
+      trueTotal = 20
+      visible = 12
+
+  seedMulti operator auditor "full" plan
+  seedMulti operator auditor "partial" plan
+
+  -- The operator declares the same honest total for both scopes.
+  _ <- declareScopeFor operator auditor "full" trueTotal expected
+  _ <- declareScopeFor operator auditor "partial" trueTotal expected
+
+  -- Every counterparty stands behind the first scope.
+  forA_ [cpA, cpB, cpC, cpD] $ \cp -> attestAs cp operator auditor "full"
+  -- Only one stands behind the second.
+  _ <- attestAs cpA operator auditor "partial"
+
+  fullCid <- proveCoverage operator operator auditor "full"
+  partCid <- proveCoverage operator operator auditor "partial"
+  Some full <- queryContractId auditor fullCid
+  Some part <- queryContractId auditor partCid
+
+  -- Same numerator, same denominator, same ratio.
+  full.auditorVisible === visible
+  part.auditorVisible === visible
+  full.declaredTotal === trueTotal
+  part.declaredTotal === trueTotal
+  full.ratio === 0.6
+  part.ratio === 0.6
+  assertMsg "the two proofs publish the same ratio" (full.ratio == part.ratio)
+
+  -- The partial run has a lower attested floor.
+  full.attestedFloor === 20
+  part.attestedFloor === 8
+  assertMsg
+    "partial attestation publishes a lower attested floor"
+    (part.attestedFloor < full.attestedFloor)
+
+  -- And a visibly lower attestor count.
+  full.attestorCount === 4
+  part.attestorCount === 1
+  full.expectedAttestorCount === 4
+  part.expectedAttestorCount === 4
+  assertMsg
+    "partial attestation publishes a visibly lower attestor count"
+    (part.attestorCount < full.attestorCount)
+
+  -- "0.60, attested by 4 of 4" is distinguishable from
+  -- "0.60, attested by 1 of 4" from the proof alone.
+  assertMsg
+    "the two proofs are distinguishable despite the identical ratio"
+    (full /= part)
+
+-- | The proof must not claim full attestation it did not have.
+testProofCannotOverstateAttestation : Script ()
+testProofCannotOverstateAttestation = do
+  operator <- allocateParty "operator"
+  auditor <- allocateParty "auditor"
+  cpA <- allocateParty "cpA"
+  cpB <- allocateParty "cpB"
+  cpC <- allocateParty "cpC"
+  cpD <- allocateParty "cpD"
+
+  let plan = [(cpA, 8, 3), (cpB, 6, 2), (cpC, 4, 2), (cpD, 2, 1)]
+      expected = [cpA, cpB, cpC, cpD]
+
+  seedMulti operator auditor "understated" plan
+  _ <- declareScopeFor operator auditor "understated" 20 expected
+  _ <- attestAs cpA operator auditor "understated"
+
+  cid <- proveCoverage operator operator auditor "understated"
+  Some proof <- queryContractId auditor cid
+
+  assertMsg
+    "the proof does not report full attestation when it did not have it"
+    (not (fullyAttested proof.expectedAttestors proof.attestors))
+
+  assertMsg
+    "the attestors recorded are exactly those that actually signed"
+    (proof.attestors == [cpA])
+
+  assertMsg
+    "the three silent counterparties are identifiable from the proof"
+    (sort (missingAttestors proof.expectedAttestors proof.attestors)
+       == sort [cpB, cpC, cpD])
+
+  -- Guard against the assertion going vacuous: full attestation must
+  -- genuinely register as full, or the predicate above proves nothing.
+  forA_ [cpB, cpC, cpD] $ \cp -> attestAs cp operator auditor "understated"
+  cid2 <- proveCoverage operator operator auditor "understated"
+  Some proof2 <- queryContractId auditor cid2
+  assertMsg
+    "once everyone attests, the proof does report full attestation"
+    (fullyAttested proof2.expectedAttestors proof2.attestors)
+  proof2.attestorCount === 4
+  missingAttestors proof2.expectedAttestors proof2.attestors === []
+
+-- | A counterparty that attests without being declared is itself a signal:
+--   the operator's expected set was incomplete. This must not be rejected.
+testUndeclaredAttestorIsRecorded : Script ()
+testUndeclaredAttestorIsRecorded = do
+  operator <- allocateParty "operator"
+  auditor <- allocateParty "auditor"
+  cpA <- allocateParty "cpA"
+  cpB <- allocateParty "cpB"
+
+  seedMulti operator auditor "undeclared" [(cpA, 5, 1), (cpB, 5, 1)]
+  -- The operator declares only one counterparty.
+  _ <- declareScopeFor operator auditor "undeclared" 10 [cpA]
+  _ <- attestAs cpA operator auditor "undeclared"
+  _ <- attestAs cpB operator auditor "undeclared"
+
+  cid <- proveCoverage operator operator auditor "undeclared"
+  Some proof <- queryContractId auditor cid
+
+  proof.expectedAttestorCount === 1
+  proof.attestorCount === 2
+  assertMsg
+    "an attestor the operator did not declare is recorded, not rejected"
+    (proof.attestorCount > proof.expectedAttestorCount)
+  assertMsg
+    "the undeclared counterparty appears in the attestor set"
+    (cpB `elem` proof.attestors)
+
+-- ---------------------------------------------------------------------------
+-- 12. A known edge: the ratio can exceed 1.0 under partial attestation
+-- ---------------------------------------------------------------------------
+
+-- | The denominator is max(declaredTotal, attestedFloor). Neither term is
+--   bounded below by what the auditor can already see, so a scope with no
+--   declaration and incomplete attestation can publish a ratio above 1.0.
+--
+--   Here: 20 settlements, 8 withheld, the auditor sees 12; only one of two
+--   counterparties attests, so the floor is 8. The published ratio is 12/8.
+--
+--   This is pinned as current behaviour, not endorsed. The ratio staying at
+--   or below 1.0 would require adding auditorVisible as a third floor term,
+--   which is a deliberate change to the published formula and has not been
+--   made. It does not affect the acceptance run, where every counterparty
+--   attests and the floor is therefore complete.
+testRatioCanExceedOneUnderPartialAttestation : Script ()
+testRatioCanExceedOneUnderPartialAttestation = do
+  operator <- allocateParty "operator"
+  auditor <- allocateParty "auditor"
+  cpA <- allocateParty "cpA"
+  cpB <- allocateParty "cpB"
+
+  seedMulti operator auditor "aboveone" [(cpA, 8, 3), (cpB, 12, 5)]
+  _ <- attestAs cpA operator auditor "aboveone"
+
+  d <- deriveCoverage operator auditor "aboveone"
+
+  d.declaredTotal === 0
+  d.attestedFloor === 8
+  d.auditorVisible === 12
+  d.ratio === 1.5
+
+  assertMsg
+    "a ratio above 1.0 means the denominator is incomplete, not that coverage exceeded total"
+    (d.ratio > 1.0 && d.attestedFloor < d.auditorVisible)

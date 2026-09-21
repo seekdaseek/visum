@@ -26,12 +26,19 @@ Four templates, in [`main/daml/Visum.daml`](main/daml/Visum.daml):
 | Template | Signatory | Purpose |
 |---|---|---|
 | `Settlement` | operator | The business event. `disclosed : [Party]` is the only field the operator manipulates; auditor present means disclosed, auditor absent means withheld, and nothing else about the contract differs. |
-| `ScopeStatement` | operator | The operator's declaration of what the period contains. visum treats it as a **claim**, never as truth. |
+| `ScopeStatement` | operator | The operator's declaration of what the period contains, including the counterparty set it says should attest. visum treats it as a **claim**, never as truth. |
 | `PartyAttestation` | counterparty | The strong denominator. A counterparty is a stakeholder on its own settlements and can count them without the operator's help. The operator cannot forge it and cannot archive it alone. |
-| `CoverageProof` | prover | The published result: `auditorVisible` over `max(declaredTotal, attestedFloor)`. |
+| `CoverageProof` | prover | The published result: `auditorVisible` over `max(declaredTotal, attestedFloor)`, plus which counterparties actually attested and how many were expected. |
 
 Where `attestedFloor` exceeds `declaredTotal`, the proof records **both**
 numbers rather than picking one. That divergence is the concealment signal.
+
+The proof also records **who actually attested** against **who was expected
+to**. A ratio carries very different weight depending on how much of the
+counterparty set stood behind it: *"0.60, attested by 4 of 4"* and *"0.60,
+attested by 1 of 4"* are the same number and not the same claim. The
+`ensure` clause binds the recorded counts to the recorded party lists, so a
+proof cannot overstate its own attestation coverage.
 
 Two properties make the proof worth reading:
 
@@ -50,7 +57,7 @@ Two properties make the proof worth reading:
 Built and proven:
 
 - The four templates, and the coverage arithmetic as pure functions.
-- A Daml Script suite of 11 scripts that **asserts** rather than prints, run
+- A Daml Script suite of 16 tests that **asserts** rather than prints, run
   against a real in-process ledger. See [Tests](#tests).
 
 Not built yet: the TypeScript CLI (`seed` / `declare` / `attest` / `prove` /
@@ -84,7 +91,7 @@ every other measured platform fact are in [NOTES.md](NOTES.md).
 
 ## Tests
 
-`cd test && dpm test`. Eleven scripts, all asserting:
+`cd test && dpm test`. Sixteen tests, all asserting:
 
 | Script | What it pins down |
 |---|---|
@@ -99,6 +106,11 @@ every other measured platform fact are in [NOTES.md](NOTES.md).
 | `testAttestedFloorAcrossCounterparties` | the floor sums across distinct counterparties and a repeat attestation does not inflate it |
 | `testDuplicateAttestationDoesNotInflate` | the per-attestor maximum, as a table |
 | `testEmptyScope` | a zero denominator is defined as 0.0, not undefined |
+| `testRatioIsRoundedNotExact` | `ratio` is `Numeric 10` and rounds, so exactness claims belong on the integers |
+| `testAttestationCoverageIsRecorded` | two scopes with an identical 0.60 ratio, one attested 4 of 4 and one 1 of 4, are distinguishable from the proof alone |
+| `testProofCannotOverstateAttestation` | the proof does not report full attestation it did not have, and the silent counterparties are identifiable |
+| `testUndeclaredAttestorIsRecorded` | a counterparty attesting outside the declared set is recorded rather than rejected |
+| `testRatioCanExceedOneUnderPartialAttestation` | pins the known edge where an incomplete denominator publishes a ratio above 1.0 |
 
 The prover's signature is
 `deriveCoverage : Party -> Party -> Text -> Script Derived`. It takes no `Int`,
@@ -106,10 +118,13 @@ so there is no parameter through which it could be handed the answer it is
 supposed to derive. The shortcut is excluded by the type rather than by
 discipline.
 
-The suite has been mutation-tested: breaking `max` to `min` in the denominator,
-hard-coding the visible count, weakening the `ensure` clause, and summing
-attestations naively were each introduced on a throwaway copy and each caused
-the suite to fail.
+The suite has been mutation-tested. Nine mutations were introduced on throwaway
+copies — breaking `max` to `min` in the denominator, hard-coding the visible
+count, weakening the `ensure` clause, summing attestations naively, ignoring the
+attested floor, claiming every expected counterparty attested, and inflating the
+attestor count — and every one caused the suite to fail. Inflating the attestor
+count was rejected by the ledger at commit time rather than by a test
+assertion.
 
 ## Limitations
 

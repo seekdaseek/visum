@@ -184,6 +184,30 @@ rather than caught by a reader. `testForgedRatioRejected` proves the ledger
 refuses `1.0`, `0.0` and `0.61` on a contract whose honest ratio is `0.6`, and
 accepts only the derived value.
 
+## Known edge: the ratio can exceed 1.0
+
+The denominator is `max(declaredTotal, attestedFloor)`. Neither term is bounded
+below by what the auditor can already see, so a scope with no declaration and
+incomplete attestation publishes a ratio above 1.0.
+
+Measured: 20 settlements, 8 withheld, auditor sees 12; one of two
+counterparties attests, so the floor is 8. Published ratio **1.5**. Pinned by
+`testRatioCanExceedOneUnderPartialAttestation`.
+
+A ratio above 1.0 is not nonsense — it means the denominator is incomplete,
+which is real information. But it is ugly output and easy to misread.
+
+The fix, if it is ever wanted, is one term:
+`max(declaredTotal, attestedFloor, auditorVisible)`. The auditor's own visible
+count is itself a valid lower bound on the true total — if the auditor can see
+twelve contracts, at least twelve exist. **This change has not been made**,
+because the published formula was specified as
+`auditorVisible / max(declaredTotal, attestedFloor)` and changing it silently
+would be worse than the edge case.
+
+It does not affect the acceptance run: there every counterparty attests, so the
+floor is complete and at least as large as `auditorVisible`.
+
 ## Decimal, and the "no tolerances" acceptance test
 
 `CoverageProof.ratio` is a Daml `Decimal`, which is `Numeric 10`. A
