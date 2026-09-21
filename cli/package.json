@@ -1,0 +1,23 @@
+{
+  "name": "visum-cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "visum CLI: seed, declare, attest, prove, audit, verify against a Canton JSON Ledger API",
+  "engines": { "node": ">=22.6" },
+  "bin": { "visum": "./src/visum.ts" },
+  "scripts": {
+    "visum": "node src/visum.ts",
+    "typecheck": "tsc --noEmit",
+    "regen-types": "openapi-typescript http://localhost:7575/docs/openapi -o src/generated/ledger-api.ts"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.13.5"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.6.1",
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.7"
+  }
+}
