@@ -411,3 +411,37 @@ testEmptyScope = do
   derived.attestedFloor === 0
   derived.auditorVisible === 0
   derived.ratio === 0.0
+
+-- ---------------------------------------------------------------------------
+-- 10. Decimal behaviour, because the acceptance test allows no tolerances
+-- ---------------------------------------------------------------------------
+
+-- | `ratio` is a Daml `Decimal`, i.e. `Numeric 10`. A non-terminating ratio is
+--   rounded to ten decimal places, so the stored ratio is not the exact
+--   rational.
+--
+--   This is safe for exact comparison only because both sides of any
+--   comparison run the same `coverageRatio`. The twenty-seed eval must compare
+--   the integers -- auditorVisible, declaredTotal, attestedFloor -- for its
+--   exactness claim, and must not reconstruct the ratio in IEEE-754 floating
+--   point and expect equality.
+testRatioIsRoundedNotExact : Script ()
+testRatioIsRoundedNotExact = do
+  -- Terminating ratios are exact.
+  coverageRatio 20 0 13 === 0.65
+  coverageRatio 30 0 18 === 0.6
+  coverageRatio 4 0 1 === 0.25
+
+  -- 7/13 does not terminate in base 10 and is therefore rounded.
+  assertMsg
+    "a non-terminating ratio is rounded, so it does not invert exactly"
+    (coverageRatio 13 0 7 * 13.0 /= 7.0)
+
+  -- Rounded or not, the same inputs always give the same output, which is
+  -- what exact comparison actually depends on.
+  coverageRatio 13 0 7 === coverageRatio 13 0 7
+  coverageRatio 101 0 97 === coverageRatio 101 0 97
+
+  -- Full coverage is exactly 1.0, and nothing exceeds it.
+  coverageRatio 50 0 50 === 1.0
+  coverageRatio 50 50 50 === 1.0

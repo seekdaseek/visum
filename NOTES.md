@@ -147,6 +147,35 @@ Do not use package ids.
 - `dpm build` from the repo root needs `--all` when a `multi-package.yaml` is
   present and no `daml.yaml` is.
 
+## Decimal, and the "no tolerances" acceptance test
+
+`CoverageProof.ratio` is a Daml `Decimal`, which is `Numeric 10`. A
+non-terminating ratio is **rounded to ten decimal places**. Measured: `7/13`
+fails to invert exactly (`coverageRatio 13 0 7 * 13.0 /= 7.0` holds).
+
+Consequences for `scripts/run-eval.sh`:
+
+- Make the exactness claim on the **integers** — `auditorVisible`,
+  `declaredTotal`, `attestedFloor`. Those are exact and are what ground truth
+  actually pins down.
+- Compare ratios only against a ratio produced by the same rounding. Do **not**
+  recompute the expected ratio as an IEEE-754 double in TypeScript and expect
+  `===` against the ledger's `Numeric 10`. That will produce spurious
+  mismatches on most seeds and there are no tolerances to hide behind.
+- `0/0` is defined as `0.0` by `coverageRatio`, not an error.
+
+## Constraint the seeder must satisfy
+
+The twenty-seed eval demands an exact match against ground truth. `attestedFloor`
+only equals the true total when **every** settlement has a counterparty that
+attests. If `visum seed` creates settlements whose counterparty never runs
+`attest`, the floor is genuinely lower than the truth and the published ratio
+will not match ground truth -- and it will be right not to, because the
+information was never on the ledger. So: either every seeded counterparty
+attests, or the eval's expected value must be computed from the attested
+universe rather than from `n`. This is a property of the seeder, not a bug in
+the prover.
+
 ## Repo conventions
 
 - Commits are authored as **seekdaseek** only. No `Co-Authored-By`, no
