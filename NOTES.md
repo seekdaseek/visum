@@ -147,6 +147,39 @@ Do not use package ids.
 - `dpm build` from the repo root needs `--all` when a `multi-package.yaml` is
   present and no `daml.yaml` is.
 
+## Correction 5 (found while building the CLI): Daml Int64 goes out as a STRING
+
+Sending a Daml `Int` field as a bare JSON number is rejected:
+
+    HTTP 500 LEDGER_API_INTERNAL_ERROR
+    "cause": "Expected ujson.Str (data: 40)"
+
+Int64 must be serialised as a **string** in `createArguments`. It comes back
+as a **number** on reads. So the asymmetry is real in both directions and
+`cli/src/model.ts` carries `damlInt()` for the write side and `asInt()` for
+the read side.
+
+This is easy to miss because a template with no Int fields works fine —
+`Settlement` seeded 100 contracts without complaint, and only `declare` blew
+up.
+
+## The ledger is the oracle for the TypeScript arithmetic
+
+`CoverageProof` carries
+`ensure ratio == coverageRatio declaredTotal attestedFloor auditorVisible`,
+evaluated in Daml at commit time. The CLI computes the ratio independently in
+BigInt (`cli/src/model.ts`). If the two disagree by one unit in the last
+place, **the create is rejected** — a rounding bug surfaces as a failed commit
+rather than as a wrong number in a report.
+
+Measured: Daml-LF numeric division rounds **half-even** to the scale of the
+result type, and the BigInt implementation matching that passed all twenty
+acceptance runs, including denominators 7, 13, 41, 97, 101, 83 and 71, which
+all produce non-terminating ratios.
+
+Do not "simplify" the ratio to `visible / denom` in floating point. It will
+fail at the ledger, and only on some seeds.
+
 ## Settled design decisions — do not re-litigate
 
 ### PartyAttestation is observed by the operator, and that is safe

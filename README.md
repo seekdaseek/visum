@@ -60,11 +60,13 @@ Built and proven:
 - A Daml Script suite of 16 tests that **asserts** rather than prints, run
   against a real in-process ledger. See [Tests](#tests).
 
-Not built yet: the TypeScript CLI (`seed` / `declare` / `attest` / `prove` /
-`audit` / `verify`) and the twenty-seed acceptance run. No TypeScript was
-written until the arithmetic was proven.
+- The TypeScript CLI: `seed`, `declare`, `attest`, `prove`, `audit`, `verify`.
+- The twenty-seed acceptance run, green. Output committed at
+  [eval/eval-output.txt](eval/eval-output.txt).
 
-## Running it
+No TypeScript was written until the arithmetic was proven in Daml first.
+
+## Running the ledger
 
 Requires `dpm` (the Daml Assistant is removed in 3.5):
 
@@ -88,6 +90,53 @@ dpm sandbox --dar main/.daml/dist/visum-0.0.1.dar --json-api-port 7575
 
 Measured cost of that sandbox: ~140 MB resident, ~22 s to ready. Details and
 every other measured platform fact are in [NOTES.md](NOTES.md).
+
+## The CLI
+
+With a sandbox running as above:
+
+```
+cd cli && npm ci
+```
+
+Then, from `cli/`:
+
+| Command | What it does |
+|---|---|
+| `node src/visum.ts seed --n 100 --hide random --seed 7` | creates n settlements over several counterparties, withholds k of them from the auditor, writes the answer key to `.visum/ground-truth.json` |
+| `node src/visum.ts declare` | operator signs a `ScopeStatement`; the declared total is counted from the operator's own projection, and `--declared <n>` overrides it to stage the concealment case |
+| `node src/visum.ts attest` | each counterparty counts its own settlements and signs a `PartyAttestation` |
+| `node src/visum.ts prove` | reads signatories and observers off each created event, computes the coverage, commits a `CoverageProof` |
+| `node src/visum.ts audit` | queries **as the auditor party only** and prints what the auditor can determine alone |
+| `node src/visum.ts verify` | compares the committed proof against the answer key; exits non-zero on any mismatch |
+
+Node 22.6+ runs the TypeScript directly. There is no build step.
+
+`visum prove` does not import the ground-truth module, and
+[`scripts/check-isolation.sh`](scripts/check-isolation.sh) fails the build if
+it ever does. `run-eval.sh` runs that check before anything else.
+
+## The acceptance run
+
+```
+./scripts/run-eval.sh
+```
+
+Twenty seeds, randomised hide counts, through the whole pipeline. All twenty
+must match ground truth **exactly, to the event**. Any mismatch fails the run
+with a non-zero exit. No tolerances. Committed output:
+[eval/eval-output.txt](eval/eval-output.txt).
+
+Exactness is claimed on the integers. Ratios are compared as `Numeric`
+against a `Numeric` computed the same way — never by parsing either side into
+an IEEE-754 double, which would produce spurious mismatches on most seeds.
+
+The settlement counts are deliberately awkward. At n=100 every ratio is x/100
+and terminates in two decimal places, exercising none of the rounding that
+`CoverageProof`'s `ensure` clause makes the ledger enforce. The primes are the
+point: each such row is the ledger agreeing, unit-in-the-last-place, with the
+BigInt arithmetic in `cli/src/model.ts`. Verified to fail: an off-by-one in
+the prover was caught in all twenty runs with exit 1.
 
 ## Tests
 

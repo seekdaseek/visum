@@ -1,0 +1,43 @@
+visum acceptance run
+====================
+
+scripts/run-eval.sh, twenty seeds with randomised hide counts, through
+seed / declare / attest / prove / verify.
+
+Exactness is claimed on the integers. The ratio is compared as a Numeric
+against a Numeric computed the same way, never by parsing either side into
+an IEEE-754 double.
+
+Settlement counts are deliberately awkward. At n=100 every ratio is x/100
+and terminates in two decimal places, which would exercise none of the
+Numeric 10 rounding that CoverageProof's ensure clause makes the ledger
+enforce. The primes and other non-terminating denominators are the point:
+each of those rows is the ledger agreeing, unit-in-the-last-place, with the
+BigInt arithmetic in cli/src/model.ts.
+
+Recorded 2026-09-22 on dpm 3.5.11 / canton 3.5.18, macOS arm64.
+
+run  seed  n    hidden  declared  attested  visible  published ratio  expected ratio  match
+---  ----  ---  ------  --------  --------  -------  ---------------  --------------  -----
+1    1001  100  14      100       100       86       0.8600000000     0.8600000000    yes
+2    1002  7    3       7         7         4        0.5714285714     0.5714285714    yes
+3    1003  13   4       13        13        9        0.6923076923     0.6923076923    yes
+4    1004  30   5       30        30        25       0.8333333333     0.8333333333    yes
+5    1005  41   17      41        41        24       0.5853658537     0.5853658537    yes
+6    1006  97   34      97        97        63       0.6494845361     0.6494845361    yes
+7    1007  3    3       3         3         0        0.0000000000     0.0000000000    yes
+8    1008  60   46      60        60        14       0.2333333333     0.2333333333    yes
+9    1009  11   8       11        11        3        0.2727272727     0.2727272727    yes
+10   1010  23   10      23        23        13       0.5652173913     0.5652173913    yes
+11   1011  101  101     101       101       0        0.0000000000     0.0000000000    yes
+12   1012  17   5       17        17        12       0.7058823529     0.7058823529    yes
+13   1013  64   1       64        64        63       0.9843750000     0.9843750000    yes
+14   1014  29   4       29        29        25       0.8620689655     0.8620689655    yes
+15   1015  53   13      53        53        40       0.7547169811     0.7547169811    yes
+16   1016  19   19      19        19        0        0.0000000000     0.0000000000    yes
+17   1017  83   18      83        83        65       0.7831325301     0.7831325301    yes
+18   1018  37   27      37        37        10       0.2702702703     0.2702702703    yes
+19   1019  71   4       71        71        67       0.9436619718     0.9436619718    yes
+20   1020  100  12      100       100       88       0.8800000000     0.8800000000    yes
+
+RESULT: all 20 runs matched ground truth exactly, to the event.
