@@ -171,6 +171,40 @@ export async function createContracts(
   );
 }
 
+/**
+ * Archive contracts, so a long-lived demo sandbox does not accumulate an
+ * ever-growing active contract set.
+ *
+ * `actAs` must hold the authority of every signatory: the operator can
+ * archive Settlements, ScopeStatements and CoverageProofs, but a
+ * PartyAttestation is signed by its attestor and only the attestor can
+ * archive it.
+ */
+export async function archiveContracts(
+  actAs: PartyId,
+  items: { templateId: string; contractId: string }[],
+): Promise<void> {
+  if (items.length === 0) return;
+  unwrap(
+    await client.POST("/v2/commands/submit-and-wait", {
+      body: {
+        commandId: `visum-archive-${Date.now()}-${commandCounter++}`,
+        actAs: [actAs],
+        userId: "participant_admin",
+        commands: items.map((i) => ({
+          ExerciseCommand: {
+            templateId: i.templateId,
+            contractId: i.contractId,
+            choice: "Archive",
+            choiceArgument: {},
+          },
+        })),
+      },
+    }),
+    "archive contracts",
+  );
+}
+
 // --------------------------------------------------------------------------
 // Template references
 //
