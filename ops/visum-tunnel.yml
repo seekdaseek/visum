@@ -1,0 +1,15 @@
+# /root/.cloudflared/visum.yml on solwatch
+#
+# A DEDICATED tunnel for visum, matching the cassum and overhang pattern on
+# this host. The shared /root/.cloudflared/config.yml is not touched, so
+# nothing else on the box -- nomen included -- is affected by starting,
+# stopping or deleting this.
+#
+# <UUID> is filled in by `cloudflared tunnel create visum`.
+tunnel: <UUID>
+credentials-file: /root/.cloudflared/<UUID>.json
+
+ingress:
+  - hostname: visum.ochinimus.app
+    service: http://localhost:3029
+  - service: http_status:404
