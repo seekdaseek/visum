@@ -45,23 +45,68 @@ isStakeholder p c = p `elem` stakeholdersOf c
 -- makes the ledger enforce it.
 -- ---------------------------------------------------------------------------
 
+-- | Which of the three floors supplied the denominator.
+--
+--   This is recorded on every proof because the three are not equally
+--   trustworthy, and a reader must be able to tell them apart.
+data DenominatorSource
+  = -- | A counterparty-signed floor. The strongest: the operator can neither
+    --   forge it nor archive it alone.
+    AttestedFloor
+  | -- | The operator's own declaration. A claim, corroborated by nobody.
+    DeclaredTotal
+  | -- | Nothing but what the auditor could already see.
+    --
+    --   This is the alarming one. When it wins, the ratio reads 1.0 -- but
+    --   only because no independent source bounded the population at all.
+    --   Every settlement the auditor was shown is in the denominator and
+    --   nothing else is, so full coverage is arithmetically guaranteed and
+    --   means nothing.
+    AuditorVisible
+  deriving (Eq, Show)
+
 -- | The denominator visum scores against.
 --
 --   The operator's declared total is a claim, never truth. Counterparty
 --   attestations bound the true total from below and the operator cannot
---   suppress them, because the counterparty signs them. Where the two
---   disagree, the larger wins.
-coverageDenominator : Int -> Int -> Int
-coverageDenominator declaredTotal attestedFloor = max declaredTotal attestedFloor
-
--- | auditorVisible over max(declaredTotal, attestedFloor).
+--   suppress them, because the counterparty signs them. The auditor's own
+--   visible count is a third floor and the weakest: if the auditor can see
+--   twelve settlements then at least twelve exist, which is true and almost
+--   useless.
 --
---   A zero denominator means nothing was declared and nothing was attested, so
---   there is no universe to score against; the ratio is defined as 0.0 rather
---   than left undefined.
+--   Including auditorVisible is what keeps the ratio from exceeding 1.0. It
+--   is deliberately NOT a silent clamp: see `denominatorSourceOf`.
+coverageDenominator : Int -> Int -> Int -> Int
+coverageDenominator declaredTotal attestedFloor auditorVisible =
+  max (max declaredTotal attestedFloor) auditorVisible
+
+-- | Which term won the max, resolved toward the strongest corroboration.
+--
+--   Ties go to the better-corroborated term. `AuditorVisible` is reported
+--   only when the auditor's own count STRICTLY exceeds both the declaration
+--   and the attested floor -- that is, exactly when no independent source
+--   bounds the population and the 1.0 is an artefact.
+denominatorSourceOf : Int -> Int -> Int -> DenominatorSource
+denominatorSourceOf declaredTotal attestedFloor auditorVisible
+  | attestedFloor >= declaredTotal && attestedFloor >= auditorVisible = AttestedFloor
+  | declaredTotal >= auditorVisible = DeclaredTotal
+  | otherwise = AuditorVisible
+
+-- | True when the denominator rests on nothing but the auditor's own view.
+--
+--   A proof in this state is not evidence of coverage. It is evidence that
+--   nobody corroborated the population.
+uncorroboratedDenominator : Int -> Int -> Int -> Bool
+uncorroboratedDenominator d a v = denominatorSourceOf d a v == AuditorVisible
+
+-- | auditorVisible over max(declaredTotal, attestedFloor, auditorVisible).
+--
+--   A zero denominator means nothing was declared, nothing was attested and
+--   nothing was visible, so there is no universe to score against; the ratio
+--   is defined as 0.0 rather than left undefined.
 coverageRatio : Int -> Int -> Int -> Decimal
 coverageRatio declaredTotal attestedFloor auditorVisible =
-  let d = coverageDenominator declaredTotal attestedFloor
+  let d = coverageDenominator declaredTotal attestedFloor auditorVisible
   in if d <= 0
        then 0.0
        else intToDecimal auditorVisible / intToDecimal d
@@ -194,6 +239,10 @@ template CoverageProof
     expectedAttestors : [Party]
     attestorCount : Int
     expectedAttestorCount : Int
+    -- | Which floor supplied the denominator. Bound by the ensure clause
+    --   below, so a proof cannot claim an independent denominator when the
+    --   auditor's own count is all that held it up.
+    denominatorSource : DenominatorSource
     computedAt : Time
   where
     signatory prover
@@ -204,3 +253,5 @@ template CoverageProof
         && ratio == coverageRatio declaredTotal attestedFloor auditorVisible
         && attestorCount == length (dedup attestors)
         && expectedAttestorCount == length (dedup expectedAttestors)
+        && denominatorSource
+             == denominatorSourceOf declaredTotal attestedFloor auditorVisible

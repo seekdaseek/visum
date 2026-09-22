@@ -28,10 +28,17 @@ Four templates, in [`main/daml/Visum.daml`](main/daml/Visum.daml):
 | `Settlement` | operator | The business event. `disclosed : [Party]` is the only field the operator manipulates; auditor present means disclosed, auditor absent means withheld, and nothing else about the contract differs. |
 | `ScopeStatement` | operator | The operator's declaration of what the period contains, including the counterparty set it says should attest. visum treats it as a **claim**, never as truth. |
 | `PartyAttestation` | counterparty | The strong denominator. A counterparty is a stakeholder on its own settlements and can count them without the operator's help. The operator cannot forge it and cannot archive it alone. |
-| `CoverageProof` | prover | The published result: `auditorVisible` over `max(declaredTotal, attestedFloor)`, plus which counterparties actually attested and how many were expected. |
+| `CoverageProof` | prover | The published result: `auditorVisible` over `max(declaredTotal, attestedFloor, auditorVisible)`, plus which counterparties actually attested, how many were expected, and which of the three terms supplied the denominator. |
 
 Where `attestedFloor` exceeds `declaredTotal`, the proof records **both**
 numbers rather than picking one. That divergence is the concealment signal.
+
+The denominator is `max(declaredTotal, attestedFloor, auditorVisible)`. The
+third term keeps the ratio from exceeding 1.0, but it is not a silent clamp:
+when the auditor's own count is what wins, the ratio is 1.0 *by construction*
+because nothing independent bounded the population. That would turn an empty
+denominator into a perfect score, so the proof records which term won and the
+`ensure` clause refuses a proof that mislabels it.
 
 The proof also records **who actually attested** against **who was expected
 to**. A ratio carries very different weight depending on how much of the
@@ -159,7 +166,9 @@ the prover was caught in all twenty runs with exit 1.
 | `testAttestationCoverageIsRecorded` | two scopes with an identical 0.60 ratio, one attested 4 of 4 and one 1 of 4, are distinguishable from the proof alone |
 | `testProofCannotOverstateAttestation` | the proof does not report full attestation it did not have, and the silent counterparties are identifiable |
 | `testUndeclaredAttestorIsRecorded` | a counterparty attesting outside the declared set is recorded rather than rejected |
-| `testRatioCanExceedOneUnderPartialAttestation` | pins the known edge where an incomplete denominator publishes a ratio above 1.0 |
+| `testRatioCanExceedOneUnderPartialAttestation` | the ratio is capped at 1.0, and the proof names `AuditorVisible` as the denominator source when the cap is what produced it |
+| `testCannotClaimIndependentDenominator` | a proof labelling an uncorroborated 1.0 as counterparty-backed is rejected by the ledger at commit time |
+| `testDenominatorSourceTieBreaking` | ties resolve toward the strongest corroboration, so `AuditorVisible` is named only on a strict excess |
 
 The prover's signature is
 `deriveCoverage : Party -> Party -> Text -> Script Derived`. It takes no `Int`,

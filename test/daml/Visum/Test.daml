@@ -204,7 +204,8 @@ testConcealment = do
     (proof.declaredTotal /= proof.attestedFloor)
 
   -- The denominator is the floor, not the declaration.
-  coverageDenominator proof.declaredTotal proof.attestedFloor === n
+  coverageDenominator proof.declaredTotal proof.attestedFloor proof.auditorVisible === n
+  proof.denominatorSource === AttestedFloor
   proof.ratio === coverageRatio disclosedCount n disclosedCount
   proof.ratio === 0.6
 
@@ -252,7 +253,9 @@ testProverCannotPeek = do
     (derived.auditorVisible /= bogusGroundTruthVisible)
   assertMsg
     "the prover's denominator came from the ledger, not the supplied total"
-    (coverageDenominator derived.declaredTotal derived.attestedFloor /= bogusGroundTruthTotal)
+    ( coverageDenominator derived.declaredTotal derived.attestedFloor derived.auditorVisible
+        /= bogusGroundTruthTotal
+    )
 
 -- ---------------------------------------------------------------------------
 -- 6. A forged ratio cannot reach the ledger
@@ -284,6 +287,7 @@ testForgedRatioRejected = do
           expectedAttestors = [cast.counterparty]
           attestorCount = 1
           expectedAttestorCount = 1
+          denominatorSource = denominatorSourceOf n n (n - k)
           computedAt = now
 
   -- A flattering ratio that does not follow from the contract's own numbers
@@ -633,21 +637,22 @@ testUndeclaredAttestorIsRecorded = do
     (cpB `elem` proof.attestors)
 
 -- ---------------------------------------------------------------------------
--- 12. A known edge: the ratio can exceed 1.0 under partial attestation
+-- 12. The denominator is capped, and the cap is never silent
 -- ---------------------------------------------------------------------------
 
--- | The denominator is max(declaredTotal, attestedFloor). Neither term is
---   bounded below by what the auditor can already see, so a scope with no
---   declaration and incomplete attestation can publish a ratio above 1.0.
+-- | The denominator is max(declaredTotal, attestedFloor, auditorVisible), so
+--   the ratio can no longer exceed 1.0.
+--
+--   But a cap on its own would be a lie. When the auditor's own count is the
+--   only thing holding the denominator up, the ratio reads 1.0 purely because
+--   nobody corroborated the population -- every settlement the auditor was
+--   shown is in the denominator and nothing else is, so full coverage is
+--   arithmetically guaranteed and means nothing. Silently smoothing that into
+--   a perfect score is the exact failure visum exists to prevent, so the proof
+--   names the winning term.
 --
 --   Here: 20 settlements, 8 withheld, the auditor sees 12; only one of two
---   counterparties attests, so the floor is 8. The published ratio is 12/8.
---
---   This is pinned as current behaviour, not endorsed. The ratio staying at
---   or below 1.0 would require adding auditorVisible as a third floor term,
---   which is a deliberate change to the published formula and has not been
---   made. It does not affect the acceptance run, where every counterparty
---   attests and the floor is therefore complete.
+--   counterparties attests, so the floor is 8 and the declaration is absent.
 testRatioCanExceedOneUnderPartialAttestation : Script ()
 testRatioCanExceedOneUnderPartialAttestation = do
   operator <- allocateParty "operator"
@@ -663,8 +668,90 @@ testRatioCanExceedOneUnderPartialAttestation = do
   d.declaredTotal === 0
   d.attestedFloor === 8
   d.auditorVisible === 12
-  d.ratio === 1.5
 
+  -- Capped, where the old two-term denominator published 1.5.
+  d.ratio === 1.0
+  assertMsg "the ratio is capped at 1.0" (d.ratio <= 1.0)
   assertMsg
-    "a ratio above 1.0 means the denominator is incomplete, not that coverage exceeded total"
-    (d.ratio > 1.0 && d.attestedFloor < d.auditorVisible)
+    "the pre-fix two-term denominator would have exceeded 1.0"
+    (intToDecimal d.auditorVisible / intToDecimal (max d.declaredTotal d.attestedFloor) > 1.0)
+
+  -- And the cap is visible, not silent.
+  d.denominatorSource === AuditorVisible
+  assertMsg
+    "the proof names the auditor's own count as the denominator source"
+    (uncorroboratedDenominator d.declaredTotal d.attestedFloor d.auditorVisible)
+  assertMsg
+    "a 1.0 from an uncorroborated denominator is not a passing grade"
+    (d.ratio == 1.0 && d.denominatorSource == AuditorVisible)
+
+-- | A proof cannot claim an independent denominator when the auditor's own
+--   count is what actually won. The ledger rejects it at commit time.
+testCannotClaimIndependentDenominator : Script ()
+testCannotClaimIndependentDenominator = do
+  operator <- allocateParty "operator"
+  auditor <- allocateParty "auditor"
+  cpA <- allocateParty "cpA"
+  cpB <- allocateParty "cpB"
+  now <- getTime
+
+  seedMulti operator auditor "claim" [(cpA, 8, 3), (cpB, 12, 5)]
+  _ <- attestAs cpA operator auditor "claim"
+
+  d <- deriveCoverage operator auditor "claim"
+  -- auditorVisible 12 strictly exceeds declared 0 and floor 8.
+  d.denominatorSource === AuditorVisible
+
+  let proofWith src =
+        CoverageProof with
+          prover = operator
+          operator
+          auditor
+          scopeTag = "claim"
+          scopeHash = "sha256:claim"
+          declaredTotal = d.declaredTotal
+          attestedFloor = d.attestedFloor
+          auditorVisible = d.auditorVisible
+          ratio = d.ratio
+          attestors = d.attestors
+          expectedAttestors = d.expectedAttestors
+          attestorCount = length d.attestors
+          expectedAttestorCount = length d.expectedAttestors
+          denominatorSource = src
+          computedAt = now
+
+  -- Dressing an uncorroborated 1.0 up as counterparty-backed is refused.
+  submitMustFail operator do createCmd (proofWith AttestedFloor)
+  -- So is passing it off as the operator's declaration.
+  submitMustFail operator do createCmd (proofWith DeclaredTotal)
+
+  -- The honest labelling commits.
+  _ <- submit operator do createCmd (proofWith AuditorVisible)
+  pure ()
+
+-- | Tie-breaking: the source resolves toward the strongest corroboration, so
+--   AuditorVisible is named only when it strictly exceeds the other two.
+testDenominatorSourceTieBreaking : Script ()
+testDenominatorSourceTieBreaking = do
+  -- Attested floor is the max, alone or tied: the strongest term wins.
+  denominatorSourceOf 10 20 5 === AttestedFloor
+  denominatorSourceOf 20 20 5 === AttestedFloor
+  denominatorSourceOf 10 20 20 === AttestedFloor
+  denominatorSourceOf 20 20 20 === AttestedFloor
+
+  -- Declaration is the max, and ties with the auditor's own count go to it:
+  -- the population was still bounded by something outside the auditor.
+  denominatorSourceOf 20 10 5 === DeclaredTotal
+  denominatorSourceOf 20 10 20 === DeclaredTotal
+
+  -- Only a strict excess over both is uncorroborated.
+  denominatorSourceOf 10 8 20 === AuditorVisible
+  denominatorSourceOf 0 0 5 === AuditorVisible
+
+  -- And in that case the ratio is exactly 1.0, every time, by construction.
+  coverageRatio 10 8 20 === 1.0
+  coverageRatio 0 0 5 === 1.0
+  coverageRatio 0 0 137 === 1.0
+  assertMsg
+    "an uncorroborated denominator always yields exactly 1.0"
+    (coverageRatio 1 2 99 == 1.0 && denominatorSourceOf 1 2 99 == AuditorVisible)

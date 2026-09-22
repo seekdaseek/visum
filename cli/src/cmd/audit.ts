@@ -8,7 +8,14 @@
 // the whole of what an auditor can determine on its own.
 
 import { ledgerEnd } from "../api.ts";
-import { asInt, attestedFloorFrom, coverageRatio, fullyAttested, missingAttestors } from "../model.ts";
+import {
+  asInt,
+  attestedFloorFrom,
+  coverageRatio,
+  denominatorSourceOf,
+  fullyAttested,
+  missingAttestors,
+} from "../model.ts";
 import { readScope } from "../scope.ts";
 import { readState } from "../state.ts";
 import { short } from "./attest.ts";
@@ -77,8 +84,15 @@ export async function audit(): Promise<void> {
   // The auditor recomputes the coverage from what it holds. It does not need
   // the prover for this, which is the point: the published proof is checkable.
   const own = coverageRatio(declaredTotal, attestedFloor, settlements.length);
+  const ownSource = denominatorSourceOf(declaredTotal, attestedFloor, settlements.length);
   console.log("");
   console.log(`  coverage the auditor computes   : ${own}`);
+  console.log(`  denominator rests on            : ${ownSource}`);
+  if (ownSource === "AuditorVisible") {
+    console.log("");
+    console.log("  UNCORROBORATED: nothing bounds the population except what the");
+    console.log("  auditor can already see. This 1.0 is arithmetic, not assurance.");
+  }
 
   if (proofs.length > 0) {
     const p = proofs[proofs.length - 1]!.payload;
@@ -87,6 +101,7 @@ export async function audit(): Promise<void> {
     console.log(
       `  published attestation coverage  : ${asInt(p.attestorCount)} of ${asInt(p.expectedAttestorCount)}`,
     );
+    console.log(`  published denominator source    : ${p.denominatorSource}`);
     const agrees = p.ratio === own;
     console.log(`  auditor's own recomputation     : ${agrees ? "AGREES" : "DISAGREES"}`);
     if (!fullyAttested(p.expectedAttestors, p.attestors)) {

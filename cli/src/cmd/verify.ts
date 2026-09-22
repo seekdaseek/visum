@@ -10,7 +10,7 @@
 
 import { ledgerEnd } from "../api.ts";
 import { readGroundTruth } from "../groundtruth.ts";
-import { asInt, coverageRatio, numericEquals } from "../model.ts";
+import { asInt, coverageRatio, denominatorSourceOf, numericEquals } from "../model.ts";
 import { readScope } from "../scope.ts";
 import { readState } from "../state.ts";
 
@@ -23,6 +23,7 @@ export type VerifyResult = {
   visible: number;
   publishedRatio: string;
   expectedRatio: string;
+  denominatorSource: string;
   failures: string[];
 };
 
@@ -59,6 +60,19 @@ export async function verify(opts: { quiet?: boolean } = {}): Promise<VerifyResu
     failures.push(`ratio ${p.ratio} != expected ${expectedRatio}`);
   }
 
+  // --- the denominator source must match the numbers it sits beside ------
+  const expectedSource = denominatorSourceOf(declared, attested, visible);
+  if (p.denominatorSource !== expectedSource) {
+    failures.push(`denominatorSource ${p.denominatorSource} != expected ${expectedSource}`);
+  }
+  // A run where every counterparty attests must rest on the attested floor.
+  // If it does not, the attestation did not actually bound the population.
+  if (p.denominatorSource !== "AttestedFloor") {
+    failures.push(
+      `denominator rests on ${p.denominatorSource}, not the counterparty-signed floor`,
+    );
+  }
+
   // --- attestation coverage ----------------------------------------------
   const attestorCount = asInt(p.attestorCount);
   const expectedAttestorCount = asInt(p.expectedAttestorCount);
@@ -80,6 +94,7 @@ export async function verify(opts: { quiet?: boolean } = {}): Promise<VerifyResu
     visible,
     publishedRatio: p.ratio,
     expectedRatio,
+    denominatorSource: p.denominatorSource,
     failures,
   };
 

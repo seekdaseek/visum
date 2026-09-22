@@ -217,29 +217,56 @@ rather than caught by a reader. `testForgedRatioRejected` proves the ledger
 refuses `1.0`, `0.0` and `0.61` on a contract whose honest ratio is `0.6`, and
 accepts only the derived value.
 
-## Known edge: the ratio can exceed 1.0
+## The denominator has three terms, and the winner is published
 
-The denominator is `max(declaredTotal, attestedFloor)`. Neither term is bounded
-below by what the auditor can already see, so a scope with no declaration and
-incomplete attestation publishes a ratio above 1.0.
+The denominator is `max(declaredTotal, attestedFloor, auditorVisible)`.
 
-Measured: 20 settlements, 8 withheld, auditor sees 12; one of two
-counterparties attests, so the floor is 8. Published ratio **1.5**. Pinned by
-`testRatioCanExceedOneUnderPartialAttestation`.
+The third term was added deliberately, and it is **not** a clamp. Before it,
+a scope with no declaration and incomplete attestation published a ratio above
+1.0 — measured 1.5, from 20 settlements with 8 withheld and one of two
+counterparties attesting.
 
-A ratio above 1.0 is not nonsense — it means the denominator is incomplete,
-which is real information. But it is ugly output and easy to misread.
+Capping that silently would have been worse than the overflow. When
+`auditorVisible` is the term that wins, every settlement the auditor was shown
+is in the denominator and nothing else is, so the ratio is **1.0 by
+construction**. A silent cap turns an empty denominator into a perfect score —
+which is precisely the failure mode visum exists to detect. So the proof
+records which term won:
 
-The fix, if it is ever wanted, is one term:
-`max(declaredTotal, attestedFloor, auditorVisible)`. The auditor's own visible
-count is itself a valid lower bound on the true total — if the auditor can see
-twelve contracts, at least twelve exist. **This change has not been made**,
-because the published formula was specified as
-`auditorVisible / max(declaredTotal, attestedFloor)` and changing it silently
-would be worse than the edge case.
+    data DenominatorSource = AttestedFloor | DeclaredTotal | AuditorVisible
 
-It does not affect the acceptance run: there every counterparty attests, so the
-floor is complete and at least as large as `auditorVisible`.
+`CoverageProof.denominatorSource` carries it, and the `ensure` clause binds it:
+
+    denominatorSource == denominatorSourceOf declaredTotal attestedFloor auditorVisible
+
+A proof that labels an uncorroborated 1.0 as `AttestedFloor` or
+`DeclaredTotal` is **rejected at commit time**, not caught by a reader.
+`testCannotClaimIndependentDenominator` proves both mislabellings are refused
+and the honest one commits.
+
+### Tie-breaking
+
+Ties resolve toward the strongest corroboration:
+
+| condition | source |
+|---|---|
+| `attestedFloor` is the max, including ties | `AttestedFloor` |
+| otherwise `declaredTotal >= auditorVisible` | `DeclaredTotal` |
+| otherwise | `AuditorVisible` |
+
+So `AuditorVisible` is reported only when the auditor's own count **strictly**
+exceeds both other terms — exactly when nothing outside the auditor bounded
+the population. A tie means something external did bound it, even if the
+number coincides.
+
+Consequence worth stating: whenever the source is `AuditorVisible`, the ratio
+is always exactly `1.0`. `testDenominatorSourceTieBreaking` asserts that as a
+table. Read `1.0 / AuditorVisible` as "no denominator", never as "full
+coverage".
+
+`verify` treats a run whose denominator does not rest on `AttestedFloor` as a
+failure, because in the acceptance run every counterparty attests and the
+floor must therefore be what bounds the population.
 
 ## Decimal, and the "no tolerances" acceptance test
 

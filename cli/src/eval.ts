@@ -85,6 +85,7 @@ function printTable(rows: Row[]): void {
     "visible",
     "published ratio",
     "expected ratio",
+    "denominator",
     "match",
   ];
   const body = rows.map((r) => [
@@ -97,6 +98,7 @@ function printTable(rows: Row[]): void {
     String(r.visible),
     r.publishedRatio,
     r.expectedRatio,
+    r.denominatorSource,
     r.ok ? "yes" : "NO",
   ]);
 

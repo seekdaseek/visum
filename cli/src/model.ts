@@ -16,9 +16,48 @@
 const SCALE = 10n;
 const POW = 10n ** SCALE;
 
+/**
+ * Which floor supplied the denominator. Mirrors Daml `DenominatorSource`.
+ *
+ * An enum with no arguments serialises as a bare string in the JSON Ledger
+ * API, so these spellings must match the Daml constructors exactly.
+ */
+export type DenominatorSource = "AttestedFloor" | "DeclaredTotal" | "AuditorVisible";
+
 /** The denominator visum scores against. Mirrors `coverageDenominator`. */
-export function coverageDenominator(declaredTotal: number, attestedFloor: number): number {
-  return Math.max(declaredTotal, attestedFloor);
+export function coverageDenominator(
+  declaredTotal: number,
+  attestedFloor: number,
+  auditorVisible: number,
+): number {
+  return Math.max(declaredTotal, attestedFloor, auditorVisible);
+}
+
+/**
+ * Which term won, resolved toward the strongest corroboration. Mirrors
+ * `denominatorSourceOf`.
+ *
+ * "AuditorVisible" is reported only when the auditor's own count strictly
+ * exceeds both other terms -- exactly when no independent source bounds the
+ * population and the resulting 1.0 is an artefact rather than a result.
+ */
+export function denominatorSourceOf(
+  declaredTotal: number,
+  attestedFloor: number,
+  auditorVisible: number,
+): DenominatorSource {
+  if (attestedFloor >= declaredTotal && attestedFloor >= auditorVisible) return "AttestedFloor";
+  if (declaredTotal >= auditorVisible) return "DeclaredTotal";
+  return "AuditorVisible";
+}
+
+/** True when the denominator rests on nothing but the auditor's own view. */
+export function uncorroboratedDenominator(
+  declaredTotal: number,
+  attestedFloor: number,
+  auditorVisible: number,
+): boolean {
+  return denominatorSourceOf(declaredTotal, attestedFloor, auditorVisible) === "AuditorVisible";
 }
 
 /** Mirrors `concealmentSignal`. */
@@ -27,8 +66,8 @@ export function concealmentSignal(declaredTotal: number, attestedFloor: number):
 }
 
 /**
- * auditorVisible over max(declaredTotal, attestedFloor), as a Numeric 10
- * decimal string.
+ * auditorVisible over max(declaredTotal, attestedFloor, auditorVisible), as a
+ * Numeric 10 decimal string.
  *
  * Computed in BigInt throughout. No IEEE-754 double is involved at any point,
  * because a double cannot represent most of these ratios and the acceptance
@@ -42,7 +81,7 @@ export function coverageRatio(
   attestedFloor: number,
   auditorVisible: number,
 ): string {
-  const d = coverageDenominator(declaredTotal, attestedFloor);
+  const d = coverageDenominator(declaredTotal, attestedFloor, auditorVisible);
   if (d <= 0) return formatNumeric(0n);
 
   const n = BigInt(auditorVisible) * POW;
@@ -157,6 +196,7 @@ export type CoverageProofPayload = {
   expectedAttestors: string[];
   attestorCount: string | number;
   expectedAttestorCount: string | number;
+  denominatorSource: DenominatorSource;
   computedAt: string;
 };
 

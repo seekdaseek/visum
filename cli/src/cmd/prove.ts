@@ -8,7 +8,13 @@
 // scripts/check-isolation.sh fails the build if that import appears.
 
 import { createContracts, isStakeholder, ledgerEnd, T } from "../api.ts";
-import { asInt, attestedFloorFrom, coverageRatio, damlInt } from "../model.ts";
+import {
+  asInt,
+  attestedFloorFrom,
+  coverageRatio,
+  damlInt,
+  denominatorSourceOf,
+} from "../model.ts";
 import { readScope } from "../scope.ts";
 import { readState } from "../state.ts";
 import { short } from "./attest.ts";
@@ -38,6 +44,7 @@ export async function prove(): Promise<void> {
   const attestors = [...new Set(claims.map((c) => c.attestor))].sort();
 
   const ratio = coverageRatio(declaredTotal, attestedFloor, auditorVisible);
+  const denominatorSource = denominatorSourceOf(declaredTotal, attestedFloor, auditorVisible);
 
   await createContracts(st.operator, [
     {
@@ -56,6 +63,7 @@ export async function prove(): Promise<void> {
         expectedAttestors,
         attestorCount: damlInt(attestors.length),
         expectedAttestorCount: damlInt(expectedAttestors.length),
+        denominatorSource,
         computedAt: new Date().toISOString(),
       },
     },
@@ -66,10 +74,17 @@ export async function prove(): Promise<void> {
   console.log(`  declaredTotal  ${declaredTotal}`);
   console.log(`  attestedFloor  ${attestedFloor}`);
   console.log(`  ratio          ${ratio}`);
+  console.log(`  denominator    ${denominatorSource}`);
   console.log(
     `  attested by    ${attestors.length} of ${expectedAttestors.length}` +
       (attestors.length > 0 ? ` (${attestors.map(short).join(", ")})` : ""),
   );
+  if (denominatorSource === "AuditorVisible") {
+    console.log("");
+    console.log("  UNCORROBORATED DENOMINATOR: nothing bounded the population except");
+    console.log("  what the auditor could already see, so this ratio is 1.0 by");
+    console.log("  construction and is not evidence of coverage.");
+  }
   if (attestedFloor > declaredTotal) {
     console.log(
       `  CONCEALMENT SIGNAL: counterparties signed for ${attestedFloor}, ` +
