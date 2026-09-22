@@ -19,6 +19,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { LEDGER_URL } from "../api.ts";
 import { runDemo, type RunResult } from "./flow.ts";
 import { PAGE } from "./page.ts";
+import { bootSeconds, ensureSandbox, sandboxState, touch } from "./sandbox.ts";
 
 const PORT = Number.parseInt(process.env.VISUM_DEMO_PORT ?? "3029", 10);
 const HOST = "127.0.0.1";
@@ -97,11 +98,17 @@ const server = createServer((req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/healthz") {
-      const up = await ledgerUp();
+      // The demo server being up is what health means. The sandbox is started
+      // on demand and stopped again when idle, so "stopped" is a normal state
+      // and must not read as a failure to a monitor.
       return send(
         res,
-        up ? 200 : 503,
-        JSON.stringify({ ok: up, ledger: up ? "up" : "down" }),
+        200,
+        JSON.stringify({
+          ok: true,
+          sandbox: sandboxState(),
+          coldStartSeconds: bootSeconds(),
+        }),
         "application/json",
       );
     }
@@ -122,18 +129,21 @@ const server = createServer((req, res) => {
           "application/json",
         );
       }
-      if (!(await ledgerUp())) {
-        return send(
-          res,
-          503,
-          JSON.stringify({ error: "the sandbox is restarting; try again in about half a minute" }),
-          "application/json",
-        );
-      }
-
       running = true;
       try {
+        // Boots the sandbox if this is the first run in a while. Concurrent
+        // callers share the one boot.
+        await ensureSandbox();
+        if (!(await ledgerUp())) {
+          return send(
+            res,
+            503,
+            JSON.stringify({ error: "the ledger did not come up; try again in a moment" }),
+            "application/json",
+          );
+        }
         const result: RunResult = await runDemo(rng());
+        touch();
         return send(res, 200, JSON.stringify(result), "application/json");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -149,5 +159,7 @@ const server = createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`visum demo on http://${HOST}:${PORT} (ledger ${LEDGER_URL})`);
+  console.log(
+    `visum demo on http://${HOST}:${PORT} (ledger ${LEDGER_URL}, sandbox started on demand)`,
+  );
 });

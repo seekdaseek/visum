@@ -78,6 +78,8 @@ export const PAGE = String.raw`<!doctype html>
       &rarr; declare &rarr; attest &rarr; prove &rarr; audit &rarr; verify.
       The settlement count and how many are withheld are chosen by the server.
       The Ledger API is not exposed and this page sends it nothing.
+      The sandbox is started on demand and stopped again when idle, so the
+      first run after a quiet spell waits about half a minute for it to boot.
     </p>
   </div>
 
