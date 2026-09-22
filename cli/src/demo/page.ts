@@ -56,6 +56,7 @@ export const PAGE = String.raw`<!doctype html>
   a { color:var(--acc) }
   .note { color:var(--dim); font-size:13px }
   .spin { display:inline-block; animation:b 1s steps(4) infinite }
+  .mono { font-family:var(--mono); font-size:12.5px; color:var(--dim) }
   @keyframes b { to { opacity:.25 } }
   footer { margin-top:32px; color:var(--dim); font-size:13px; border-top:1px solid var(--line);
            padding-top:16px }
@@ -157,10 +158,19 @@ export const PAGE = String.raw`<!doctype html>
 </div>
 
 <script>
-// If a CSP directive ever blocks the page's own fetch again, say so out loud
+// If a CSP directive ever blocks the page's OWN fetch again, say so out loud
 // rather than letting it masquerade as an unreachable server.
+//
+// ONLY same-origin violations reach the visitor. Cloudflare injects an
+// analytics beacon into proxied pages and this policy refuses it, which is
+// intended -- but the first version of this listener had no origin check, so
+// it wrote that third-party refusal straight into the status line and every
+// visitor was greeted with a CSP error before clicking anything.
 document.addEventListener('securitypolicyviolation', (e) => {
-  console.error('visum: CSP blocked', e.effectiveDirective, e.blockedURI);
+  const own = e.blockedURI === 'self' || e.blockedURI === 'inline'
+              || e.blockedURI.startsWith(location.origin);
+  console[own ? 'error' : 'warn']('visum: CSP blocked', e.effectiveDirective, e.blockedURI);
+  if (!own) return;
   const st = document.getElementById('status');
   if (st) st.textContent =
     'blocked by this page\u2019s own Content-Security-Policy (' + e.effectiveDirective + ')';
@@ -177,9 +187,31 @@ const pill = (text, kind) => '<span class="pill ' + (kind||'') + '">' + esc(text
 $('go').addEventListener('click', async () => {
   const btn = $('go'), st = $('status');
   btn.disabled = true;
-  st.innerHTML = 'booting a scope and committing contracts <span class="spin">…</span>';
+
+  // The sandbox is started on demand and stopped when idle, so a cold run
+  // takes about half a minute. Thirty seconds of an unexplained spinner
+  // reads as a hang, so say what is happening, roughly how long it takes,
+  // and count the seconds so the page visibly is not stuck.
+  let cold = false;
+  try {
+    const h = await (await fetch('/healthz')).json();
+    cold = h.sandbox !== 'ready';
+  } catch (_) { /* health is advisory; the run still proceeds */ }
+
+  const t0 = Date.now();
+  const label = cold
+    ? 'starting a Canton ledger \u2014 about 30 seconds on the first run'
+    : 'seeding, proving and verifying';
+  const tick = () => {
+    st.innerHTML = esc(label) + ' <span class="mono">' +
+      Math.round((Date.now() - t0) / 1000) + 's</span> <span class="spin">…</span>';
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+
   try {
     const res = await fetch('/api/run', { method:'POST' });
+    clearInterval(timer);
     // Read as text first. A Cloudflare 502/524 returns an HTML body, and
     // res.json() on that throws -- which previously fell into the catch
     // below and reported "could not reach the demo server", which was false
@@ -200,6 +232,7 @@ $('go').addEventListener('click', async () => {
     render(d);
     st.textContent = 'done in ' + (d.elapsedMs/1000).toFixed(1) + 's';
   } catch (e) {
+    clearInterval(timer);
     // Never swallow this. A silent catch is what hid the CSP block.
     console.error('visum: /api/run failed', e);
     st.textContent = 'could not reach the demo server: ' + ((e && e.message) || e);

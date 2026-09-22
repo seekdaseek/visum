@@ -68,10 +68,55 @@ async function main(): Promise<number> {
     const title = await page.title();
     title.includes("visum") ? ok(`title "${title}"`) : bad(`unexpected title "${title}"`);
 
-    // Click the real button.
+    // ---- the RESTING state: what a judge sees before touching anything ----
+    //
+    // The guard used to assert only the post-click state. The ratio rendered
+    // fine, so it went green while the page was greeting every visitor with
+    // a CSP error they had not caused. The first thing a judge sees is the
+    // page before they interact with it, so that is what gets checked first.
+    await page.waitForLoadState("networkidle").catch(() => undefined);
+    await page.waitForTimeout(2000); // let any injected third-party script fail
+
+    const restingStatus = ((await page.locator("#status").textContent()) ?? "").trim();
+    const ERROR_SHAPED = [
+      "blocked",
+      "error",
+      "failed",
+      "cannot",
+      "could not",
+      "unexpected",
+      "refused",
+      "violat",
+    ];
+    const offending = ERROR_SHAPED.filter((w) => restingStatus.toLowerCase().includes(w));
+    if (restingStatus === "") {
+      ok("resting status line is empty");
+    } else if (offending.length === 0) {
+      ok(`resting status line is neutral ("${restingStatus}")`);
+    } else {
+      bad(`resting status line shows an error before any click: "${restingStatus}"`);
+    }
+
+    const restingHidden = await page.locator("#out").evaluate((el) => (el as { hidden: boolean }).hidden);
+    restingHidden ? ok("results are hidden before the run") : bad("results visible before any run");
+
     const btn = page.locator("#go");
     await btn.waitFor({ state: "visible", timeout: 15_000 });
-    ok("run button is present");
+    (await btn.isDisabled())
+      ? bad("run button is disabled at rest")
+      : ok("run button is present and enabled");
+
+    // No first-party CSP violation may fire on a plain page load either.
+    const restingOrigin = new URL(URL_).origin;
+    const restingV = await page.evaluate(() => window.__cspViolations ?? []);
+    const restingOurs = restingV.filter(
+      (x) => x.blocked.startsWith(restingOrigin) || x.blocked === "self" || x.blocked === "inline",
+    );
+    restingOurs.length === 0
+      ? ok("no first-party CSP violations at rest")
+      : restingOurs.forEach((x) => bad(`CSP blocked ${x.directive} -> ${x.blocked} on load`));
+
+    // ---- now interact ----
     await btn.click();
 
     // Wait for the result to actually RENDER -- not for the API to answer.
