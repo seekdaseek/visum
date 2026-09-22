@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { createContracts, ledgerEnd, T } from "../api.ts";
-import { damlInt } from "../model.ts";
+import { asInt, damlInt } from "../model.ts";
 import { readScope } from "../scope.ts";
 import { readState } from "../state.ts";
 
@@ -20,6 +20,7 @@ export async function attest(opts: { as?: string }): Promise<void> {
   const offset = await ledgerEnd();
   for (const cp of targets) {
     const { settlements } = await readScope(cp, st.scopeTag, offset);
+    const seenValue = settlements.reduce((a, { payload }) => a + asInt(payload.amount), 0);
     await createContracts(cp, [
       {
         templateId: T.PartyAttestation,
@@ -29,10 +30,11 @@ export async function attest(opts: { as?: string }): Promise<void> {
           auditor: st.auditor,
           scopeTag: st.scopeTag,
           seenCount: damlInt(settlements.length),
+          seenValue: damlInt(seenValue),
         },
       },
     ]);
-    console.log(`${short(cp)} attested ${settlements.length} settlements`);
+    console.log(`${short(cp)} attested ${settlements.length} settlements, ${seenValue} minor units`);
   }
 }
 

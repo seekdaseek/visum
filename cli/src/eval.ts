@@ -86,6 +86,8 @@ function printTable(rows: Row[]): void {
     "published ratio",
     "expected ratio",
     "denominator",
+    "value ratio",
+    "value denom",
     "match",
   ];
   const body = rows.map((r) => [
@@ -99,6 +101,8 @@ function printTable(rows: Row[]): void {
     r.publishedRatio,
     r.expectedRatio,
     r.denominatorSource,
+    r.publishedValueRatio,
+    r.valueDenominatorSource,
     r.ok ? "yes" : "NO",
   ]);
 

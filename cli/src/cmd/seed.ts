@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { createContracts, ensureParties, T } from "../api.ts";
+import { damlInt } from "../model.ts";
 import { writeGroundTruth, type GroundTruth } from "../groundtruth.ts";
 import { writeState } from "../state.ts";
 
@@ -44,14 +45,28 @@ export async function seed(opts: {
   }
   const withheld = new Set(idx.slice(0, hidden));
 
+  // Amounts are deliberately uneven, in minor units. Flat amounts would make
+  // value coverage a restatement of count coverage and prove nothing; a
+  // heavy-tailed spread is also closer to a real settlement book.
+  const amountFor = (i: number): number => {
+    const tail = rnd();
+    const base = tail > 0.92 ? 5_000_00 + Math.floor(rnd() * 9_500_000) : 50_00 + Math.floor(rnd() * 250_000);
+    return base + i;
+  };
+
   // Round-robin the settlements over the counterparties.
-  const perCp = counterparties.map((party) => ({ party, total: 0, hidden: 0 }));
+  const perCp = counterparties.map((party) => ({ party, total: 0, hidden: 0, value: 0, hiddenValue: 0 }));
   const creates = Array.from({ length: opts.n }, (_, i) => {
     const slot = i % counterparties.length;
     const cp = counterparties[slot]!;
     const isHidden = withheld.has(i);
+    const amount = amountFor(i);
     perCp[slot]!.total += 1;
-    if (isHidden) perCp[slot]!.hidden += 1;
+    perCp[slot]!.value += amount;
+    if (isHidden) {
+      perCp[slot]!.hidden += 1;
+      perCp[slot]!.hiddenValue += amount;
+    }
     return {
       templateId: T.Settlement,
       createArguments: {
@@ -59,6 +74,7 @@ export async function seed(opts: {
         counterparty: cp,
         payload: `${opts.scopeTag}-settlement-${i + 1}`,
         scopeTag: opts.scopeTag,
+        amount: damlInt(amount),
         disclosed: isHidden ? [] : [auditor],
       },
     };
@@ -73,12 +89,17 @@ export async function seed(opts: {
 
   writeState({ scopeTag: opts.scopeTag, operator, auditor, counterparties });
 
+  const totalValue = perCp.reduce((a, c) => a + c.value, 0);
+  const hiddenValue = perCp.reduce((a, c) => a + c.hiddenValue, 0);
   const gt: GroundTruth = {
     seed: opts.seedNum,
     scopeTag: opts.scopeTag,
     total: opts.n,
     hidden,
     visible: opts.n - hidden,
+    totalValue,
+    hiddenValue,
+    visibleValue: totalValue - hiddenValue,
     counterparties: perCp,
   };
   writeGroundTruth(gt);

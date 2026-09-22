@@ -128,7 +128,10 @@ export function toScaled(v: string): bigint {
   return neg ? -scaled : scaled;
 }
 
-/** Sum attested counts, taking the highest per attestor. Mirrors `attestedFloorFrom`. */
+/**
+ * Sum attested amounts, taking the highest per attestor. Mirrors
+ * `attestedFloorFrom`. Used for both counts and minor-unit value sums.
+ */
 export function attestedFloorFrom(claims: { attestor: string; seenCount: number }[]): number {
   const best = new Map<string, number>();
   for (const c of claims) {
@@ -159,6 +162,8 @@ export type SettlementPayload = {
   counterparty: string;
   payload: string;
   scopeTag: string;
+  /** Minor units (cents). Int, not Decimal: sums must be exact. */
+  amount: string | number;
   disclosed: string[];
 };
 
@@ -170,6 +175,7 @@ export type ScopeStatementPayload = {
   periodEnd: string;
   templatesInScope: string[];
   declaredTotal: string | number;
+  declaredValue: string | number;
   expectedAttestors: string[];
   scopeHash: string;
 };
@@ -180,6 +186,7 @@ export type PartyAttestationPayload = {
   auditor: string;
   scopeTag: string;
   seenCount: string | number;
+  seenValue: string | number;
 };
 
 export type CoverageProofPayload = {
@@ -197,6 +204,11 @@ export type CoverageProofPayload = {
   attestorCount: string | number;
   expectedAttestorCount: string | number;
   denominatorSource: DenominatorSource;
+  auditorVisibleValue: string | number;
+  declaredValue: string | number;
+  attestedValueFloor: string | number;
+  valueRatio: string;
+  valueDenominatorSource: DenominatorSource;
   computedAt: string;
 };
 

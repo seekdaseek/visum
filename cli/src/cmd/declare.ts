@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { createContracts, ledgerEnd, T } from "../api.ts";
-import { damlInt } from "../model.ts";
+import { asInt, damlInt } from "../model.ts";
 import { readScope, scopeHash } from "../scope.ts";
 import { readState } from "../state.ts";
 
@@ -20,6 +20,8 @@ export async function declare(opts: { declared?: number }): Promise<void> {
   const { settlements } = await readScope(st.operator, st.scopeTag, offset);
 
   const declaredTotal = opts.declared ?? settlements.length;
+  // Declared value is counted from the operator's own projection too.
+  const declaredValue = settlements.reduce((a, { payload }) => a + asInt(payload.amount), 0);
   const now = new Date().toISOString();
   const templatesInScope = [T.Settlement];
 
@@ -43,6 +45,7 @@ export async function declare(opts: { declared?: number }): Promise<void> {
         periodEnd: now,
         templatesInScope,
         declaredTotal: damlInt(declaredTotal),
+        declaredValue: damlInt(declaredValue),
         expectedAttestors: st.counterparties,
         scopeHash: hash,
       },
@@ -54,5 +57,6 @@ export async function declare(opts: { declared?: number }): Promise<void> {
       ? "counted from the operator's own projection"
       : `overridden with --declared (operator can actually see ${settlements.length})`;
   console.log(`declared ${declaredTotal} for scope "${st.scopeTag}" (${note})`);
+  console.log(`declared value ${declaredValue} minor units`);
   console.log(`expected attestors: ${st.counterparties.length}`);
 }

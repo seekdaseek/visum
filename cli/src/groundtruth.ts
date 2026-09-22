@@ -25,7 +25,11 @@ export type GroundTruth = {
   total: number;
   hidden: number;
   visible: number;
-  counterparties: { party: string; total: number; hidden: number }[];
+  /** Minor units. */
+  totalValue: number;
+  hiddenValue: number;
+  visibleValue: number;
+  counterparties: { party: string; total: number; hidden: number; value: number; hiddenValue: number }[];
 };
 
 export function writeGroundTruth(gt: GroundTruth): void {

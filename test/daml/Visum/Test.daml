@@ -44,7 +44,17 @@ seed cast scopeTag n k =
           counterparty = cast.counterparty
           payload = "settlement-" <> show i
           scopeTag
+          amount = amountFor i
           disclosed = if i <= k then [] else [cast.auditor]
+
+-- | A deliberately uneven amount per settlement, in minor units.
+--
+--   Flat amounts would make value coverage a restatement of count coverage
+--   and the value tests would prove nothing. The first settlements are the
+--   withheld ones in `seed`, so this also means the withheld set carries
+--   a different share of value than of count.
+amountFor : Int -> Int
+amountFor i = 100 * i * i + 50
 
 declareScope : Cast -> Text -> Int -> Script (ContractId ScopeStatement)
 declareScope cast scopeTag declaredTotal =
@@ -53,6 +63,11 @@ declareScope cast scopeTag declaredTotal =
 declareScopeWith :
   Cast -> Text -> Int -> [Party] -> Script (ContractId ScopeStatement)
 declareScopeWith cast scopeTag declaredTotal expectedAttestors = do
+  -- Declare the value the operator can actually see, so the count and value
+  -- declarations are independently honest by default.
+  mine <- query @Settlement cast.operator
+  let declaredValue =
+        foldl (\acc (_, x) -> if x.scopeTag == scopeTag then acc + x.amount else acc) 0 mine
   now <- getTime
   submit cast.operator do
     createCmd
@@ -64,6 +79,7 @@ declareScopeWith cast scopeTag declaredTotal expectedAttestors = do
         periodEnd = now
         templatesInScope = ["#visum:Visum:Settlement"]
         declaredTotal
+        declaredValue
         expectedAttestors
         scopeHash = "sha256:" <> scopeTag
 -- ---------------------------------------------------------------------------
@@ -288,6 +304,11 @@ testForgedRatioRejected = do
           attestorCount = 1
           expectedAttestorCount = 1
           denominatorSource = denominatorSourceOf n n (n - k)
+          auditorVisibleValue = 600
+          declaredValue = 1000
+          attestedValueFloor = 1000
+          valueRatio = coverageRatio 1000 1000 600
+          valueDenominatorSource = denominatorSourceOf 1000 1000 600
           computedAt = now
 
   -- A flattering ratio that does not follow from the contract's own numbers
@@ -371,6 +392,7 @@ testAttestedFloorAcrossCounterparties = do
           counterparty = cpA
           payload = "a-" <> show i
           scopeTag
+          amount = amountFor i
           disclosed = if i <= 4 then [] else [auditor]
   -- 4 settlements with cpB, all disclosed.
   forA_ [1 .. 4] $ \i ->
@@ -381,6 +403,7 @@ testAttestedFloorAcrossCounterparties = do
           counterparty = cpB
           payload = "b-" <> show i
           scopeTag
+          amount = amountFor i
           disclosed = [auditor]
 
   _ <- attestAs cpA operator auditor scopeTag
@@ -477,12 +500,16 @@ seedMulti operator auditor scopeTag plan =
             counterparty = cp
             payload = scopeTag <> "-" <> show i
             scopeTag
+            amount = amountFor i
             disclosed = if i <= hidden then [] else [auditor]
 
 declareScopeFor :
   Party -> Party -> Text -> Int -> [Party] -> Script (ContractId ScopeStatement)
 declareScopeFor operator auditor scopeTag declaredTotal expectedAttestors = do
   now <- getTime
+  mine <- query @Settlement operator
+  let declaredValue =
+        foldl (\acc (_, x) -> if x.scopeTag == scopeTag then acc + x.amount else acc) 0 mine
   submit operator do
     createCmd
       ScopeStatement with
@@ -493,6 +520,7 @@ declareScopeFor operator auditor scopeTag declaredTotal expectedAttestors = do
         periodEnd = now
         templatesInScope = ["#visum:Visum:Settlement"]
         declaredTotal
+        declaredValue
         expectedAttestors
         scopeHash = "sha256:" <> scopeTag
 
@@ -718,6 +746,11 @@ testCannotClaimIndependentDenominator = do
           attestorCount = length d.attestors
           expectedAttestorCount = length d.expectedAttestors
           denominatorSource = src
+          auditorVisibleValue = d.auditorVisibleValue
+          declaredValue = d.declaredValue
+          attestedValueFloor = d.attestedValueFloor
+          valueRatio = d.valueRatio
+          valueDenominatorSource = d.valueDenominatorSource
           computedAt = now
 
   -- Dressing an uncorroborated 1.0 up as counterparty-backed is refused.
@@ -755,3 +788,181 @@ testDenominatorSourceTieBreaking = do
   assertMsg
     "an uncorroborated denominator always yields exactly 1.0"
     (coverageRatio 1 2 99 == 1.0 && denominatorSourceOf 1 2 99 == AuditorVisible)
+
+-- ---------------------------------------------------------------------------
+-- 13. Value coverage: the number an auditor actually cares about
+-- ---------------------------------------------------------------------------
+
+-- | Seed a scope from an explicit list of (amount in minor units, disclosed).
+seedAmounts : Party -> Party -> Party -> Text -> [(Int, Bool)] -> Script ()
+seedAmounts operator counterparty auditor scopeTag rows =
+  forA_ (zip [1 .. length rows] rows) $ \(i, (amount, disclosed)) ->
+    submit operator do
+      createCmd
+        Settlement with
+          operator
+          counterparty
+          payload = scopeTag <> "-" <> show i
+          scopeTag
+          amount
+          disclosed = if disclosed then [auditor] else []
+
+-- | The same ledger, scored two ways, giving opposite verdicts.
+--
+--   Ten settlements: one worth 1,000,000 minor units and nine worth 100 each.
+--
+--   * scope "whale" discloses only the big one. Count coverage reads 0.10.
+--     Value coverage reads 0.9991. Ten percent of the contracts, and
+--     essentially all of the money.
+--   * scope "dust" discloses only the nine small ones. Count coverage reads
+--     0.90 -- which looks like a well-run audit -- while value coverage reads
+--     0.0009. Ninety percent of the contracts and a thousandth of the money.
+--
+--   An auditor told "90% covered" and nothing else has been badly misled.
+--   That is why the proof carries both.
+testValueCoverageDivergesFromCountCoverage : Script ()
+testValueCoverageDivergesFromCountCoverage = do
+  operator <- allocateParty "operator"
+  counterparty <- allocateParty "counterparty"
+  auditor <- allocateParty "auditor"
+
+  let big = 1000000
+      small = 100
+      totalValue = big + 9 * small -- 1,000,900
+
+  -- whale: only the big settlement is disclosed
+  seedAmounts operator counterparty auditor "whale" ((big, True) :: replicate 9 (small, False))
+  -- dust: only the nine small ones are disclosed
+  seedAmounts operator counterparty auditor "dust" ((big, False) :: replicate 9 (small, True))
+
+  forA_ ["whale", "dust"] $ \tag -> do
+    _ <- declareScopeFor operator auditor tag 10 [counterparty]
+    attestAs counterparty operator auditor tag
+
+  whale <- deriveCoverage operator auditor "whale"
+  dust <- deriveCoverage operator auditor "dust"
+
+  -- the attested floors are the truth in both scopes
+  whale.attestedFloor === 10
+  whale.attestedValueFloor === totalValue
+  dust.attestedFloor === 10
+  dust.attestedValueFloor === totalValue
+
+  -- whale: few contracts, nearly all the money
+  whale.auditorVisible === 1
+  whale.auditorVisibleValue === big
+  whale.ratio === coverageRatio 10 10 1
+  whale.ratio === 0.1
+  whale.valueRatio === coverageRatio totalValue totalValue big
+
+  -- dust: most contracts, almost none of the money
+  dust.auditorVisible === 9
+  dust.auditorVisibleValue === 9 * small
+  dust.ratio === 0.9
+  dust.valueRatio === coverageRatio totalValue totalValue (9 * small)
+
+  -- The two measures disagree, and in opposite directions.
+  assertMsg
+    "whale: value coverage is far higher than count coverage"
+    (whale.valueRatio > whale.ratio)
+  assertMsg
+    "dust: value coverage is far lower than count coverage"
+    (dust.valueRatio < dust.ratio)
+  assertMsg
+    "count coverage alone would rank dust above whale"
+    (dust.ratio > whale.ratio)
+  assertMsg
+    "value coverage ranks them the other way round"
+    (dust.valueRatio < whale.valueRatio)
+
+  -- Concretely: a 0.90 count ratio hiding a value ratio under one percent.
+  assertMsg
+    "dust publishes high count coverage and negligible value coverage"
+    (dust.ratio == 0.9 && dust.valueRatio < 0.01)
+
+-- | The value ratio is bound to its own integers, exactly like the count
+--   ratio. A flattering value figure cannot reach the ledger.
+testForgedValueRatioRejected : Script ()
+testForgedValueRatioRejected = do
+  operator <- allocateParty "operator"
+  counterparty <- allocateParty "counterparty"
+  auditor <- allocateParty "auditor"
+  now <- getTime
+
+  seedAmounts operator counterparty auditor "vforge" [(900, True), (100, False)]
+  _ <- declareScopeFor operator auditor "vforge" 2 [counterparty]
+  _ <- attestAs counterparty operator auditor "vforge"
+  d <- deriveCoverage operator auditor "vforge"
+
+  d.auditorVisibleValue === 900
+  d.attestedValueFloor === 1000
+
+  let proofWith vRatio vSrc =
+        CoverageProof with
+          prover = operator
+          operator
+          auditor
+          scopeTag = "vforge"
+          scopeHash = "sha256:vforge"
+          declaredTotal = d.declaredTotal
+          attestedFloor = d.attestedFloor
+          auditorVisible = d.auditorVisible
+          ratio = d.ratio
+          attestors = d.attestors
+          expectedAttestors = d.expectedAttestors
+          attestorCount = length d.attestors
+          expectedAttestorCount = length d.expectedAttestors
+          denominatorSource = d.denominatorSource
+          auditorVisibleValue = d.auditorVisibleValue
+          declaredValue = d.declaredValue
+          attestedValueFloor = d.attestedValueFloor
+          valueRatio = vRatio
+          valueDenominatorSource = vSrc
+          computedAt = now
+
+  -- A value ratio that does not follow from its own numbers is refused.
+  submitMustFail operator do createCmd (proofWith 1.0 d.valueDenominatorSource)
+  submitMustFail operator do createCmd (proofWith 0.0 d.valueDenominatorSource)
+  submitMustFail operator do createCmd (proofWith 0.91 d.valueDenominatorSource)
+  -- So is mislabelling which floor held the value denominator up.
+  submitMustFail operator do createCmd (proofWith d.valueRatio AuditorVisible)
+
+  -- The honest one commits.
+  _ <- submit operator do createCmd (proofWith d.valueRatio d.valueDenominatorSource)
+  pure ()
+
+-- | Value coverage carries its own denominator source, and an uncorroborated
+--   value denominator is called out the same way an uncorroborated count is.
+testValueDenominatorSourceIsIndependent : Script ()
+testValueDenominatorSourceIsIndependent = do
+  operator <- allocateParty "operator"
+  counterparty <- allocateParty "counterparty"
+  auditor <- allocateParty "auditor"
+
+  -- No scope statement and no attestation: both denominators rest on the
+  -- auditor's own view alone.
+  seedAmounts operator counterparty auditor "vsrc" [(500, True), (500, False)]
+  d <- deriveCoverage operator auditor "vsrc"
+
+  d.declaredTotal === 0
+  d.declaredValue === 0
+  d.attestedFloor === 0
+  d.attestedValueFloor === 0
+  d.auditorVisible === 1
+  d.auditorVisibleValue === 500
+
+  d.denominatorSource === AuditorVisible
+  d.valueDenominatorSource === AuditorVisible
+  d.ratio === 1.0
+  d.valueRatio === 1.0
+  assertMsg
+    "an uncorroborated value denominator yields exactly 1.0, same as the count"
+    (d.valueRatio == 1.0 && d.valueDenominatorSource == AuditorVisible)
+
+  -- And the two sources can genuinely differ: attest the count but not in a
+  -- way that bounds value higher than what the auditor sees.
+  assertMsg
+    "the two sources are computed independently"
+    ( denominatorSourceOf 10 10 5 == AttestedFloor
+        && denominatorSourceOf 0 0 500 == AuditorVisible
+    )

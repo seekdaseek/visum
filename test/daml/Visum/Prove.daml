@@ -23,6 +23,11 @@ data Derived = Derived
     attestors : [Party]
     expectedAttestors : [Party]
     denominatorSource : DenominatorSource
+    auditorVisibleValue : Int
+    declaredValue : Int
+    attestedValueFloor : Int
+    valueRatio : Decimal
+    valueDenominatorSource : DenominatorSource
     scopeHash : Text
   deriving (Eq, Show)
 
@@ -50,9 +55,14 @@ deriveCoverage prover auditor scopeTag = do
   atts <- inScope <$> query @PartyAttestation prover
 
   let auditorVisible = length [() | (_, s) <- settlements, isStakeholder auditor s]
+      -- The same stakeholder read, summed over value instead of counted.
+      auditorVisibleValue =
+        foldl (\acc (_, s) -> if isStakeholder auditor s then acc + s.amount else acc) 0 settlements
       declaredTotal = foldl (\m (_, s) -> max m s.declaredTotal) 0 scopes
+      declaredValue = foldl (\m (_, s) -> max m s.declaredValue) 0 scopes
       scopeHash = foldl (\h (_, s) -> if h == "" then s.scopeHash else h) "" scopes
       attestedFloor = attestedFloorFrom [(a.attestor, a.seenCount) | (_, a) <- atts]
+      attestedValueFloor = attestedFloorFrom [(a.attestor, a.seenValue) | (_, a) <- atts]
       -- Who actually signed, read off the ledger. Not who was supposed to.
       attestors = sort (dedup [a.attestor | (_, a) <- atts])
       -- Who the operator said would sign, read off its own declaration.
@@ -68,6 +78,12 @@ deriveCoverage prover auditor scopeTag = do
       expectedAttestors
       denominatorSource =
         denominatorSourceOf declaredTotal attestedFloor auditorVisible
+      auditorVisibleValue
+      declaredValue
+      attestedValueFloor
+      valueRatio = coverageRatio declaredValue attestedValueFloor auditorVisibleValue
+      valueDenominatorSource =
+        denominatorSourceOf declaredValue attestedValueFloor auditorVisibleValue
       scopeHash
   where
     inScope : HasField "scopeTag" a Text => [(b, a)] -> [(b, a)]
@@ -95,6 +111,11 @@ proveCoverage prover operator auditor scopeTag = do
         attestorCount = length d.attestors
         expectedAttestorCount = length d.expectedAttestors
         denominatorSource = d.denominatorSource
+        auditorVisibleValue = d.auditorVisibleValue
+        declaredValue = d.declaredValue
+        attestedValueFloor = d.attestedValueFloor
+        valueRatio = d.valueRatio
+        valueDenominatorSource = d.valueDenominatorSource
         computedAt = now
 
 -- | A counterparty counts its own settlements and signs for them.
@@ -105,6 +126,7 @@ proveCoverage prover operator auditor scopeTag = do
 attestAs : Party -> Party -> Party -> Text -> Script (ContractId PartyAttestation)
 attestAs attestor operator auditor scopeTag = do
   mine <- query @Settlement attestor
+  let inScope = [s | (_, s) <- mine, s.scopeTag == scopeTag]
   submit attestor do
     createCmd
       PartyAttestation with
@@ -112,7 +134,8 @@ attestAs attestor operator auditor scopeTag = do
         operator
         auditor
         scopeTag
-        seenCount = length [() | (_, s) <- mine, s.scopeTag == scopeTag]
+        seenCount = length inScope
+        seenValue = foldl (\acc s -> acc + s.amount) 0 inScope
 
 -- | The control case: what the auditor can determine with only its own
 --   projection to go on.

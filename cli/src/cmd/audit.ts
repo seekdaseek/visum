@@ -83,11 +83,23 @@ export async function audit(): Promise<void> {
 
   // The auditor recomputes the coverage from what it holds. It does not need
   // the prover for this, which is the point: the published proof is checkable.
+  const visibleValue = settlements.reduce((a, { payload }) => a + asInt(payload.amount), 0);
+  const declaredValue = scopes.reduce((m, s) => Math.max(m, asInt(s.payload.declaredValue)), 0);
+  const attestedValueFloor = attestedFloorFrom(
+    attestations.map(({ payload }) => ({
+      attestor: payload.attestor,
+      seenCount: asInt(payload.seenValue),
+    })),
+  );
+  const ownValue = coverageRatio(declaredValue, attestedValueFloor, visibleValue);
+  const ownValueSource = denominatorSourceOf(declaredValue, attestedValueFloor, visibleValue);
   const own = coverageRatio(declaredTotal, attestedFloor, settlements.length);
   const ownSource = denominatorSourceOf(declaredTotal, attestedFloor, settlements.length);
   console.log("");
   console.log(`  coverage the auditor computes   : ${own}`);
   console.log(`  denominator rests on            : ${ownSource}`);
+  console.log(`  value coverage                  : ${ownValue}  (${ownValueSource})`);
+  console.log(`  value the auditor can see       : ${visibleValue} of ${Math.max(declaredValue, attestedValueFloor, visibleValue)} minor units`);
   if (ownSource === "AuditorVisible") {
     console.log("");
     console.log("  UNCORROBORATED: nothing bounds the population except what the");
@@ -102,6 +114,7 @@ export async function audit(): Promise<void> {
       `  published attestation coverage  : ${asInt(p.attestorCount)} of ${asInt(p.expectedAttestorCount)}`,
     );
     console.log(`  published denominator source    : ${p.denominatorSource}`);
+    console.log(`  published value ratio           : ${p.valueRatio} (${p.valueDenominatorSource})`);
     const agrees = p.ratio === own;
     console.log(`  auditor's own recomputation     : ${agrees ? "AGREES" : "DISAGREES"}`);
     if (!fullyAttested(p.expectedAttestors, p.attestors)) {

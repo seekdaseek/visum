@@ -24,6 +24,13 @@ export type VerifyResult = {
   publishedRatio: string;
   expectedRatio: string;
   denominatorSource: string;
+  visibleValue: number;
+  attestedValue: number;
+  publishedValueRatio: string;
+  expectedValueRatio: string;
+  valueDenominatorSource: string;
+  attestorCount: number;
+  expectedAttestorCount: number;
   failures: string[];
 };
 
@@ -73,6 +80,32 @@ export async function verify(opts: { quiet?: boolean } = {}): Promise<VerifyResu
     );
   }
 
+  // --- value coverage, exact on the integers, ratio Numeric vs Numeric ----
+  const visibleValue = asInt(p.auditorVisibleValue);
+  const attestedValue = asInt(p.attestedValueFloor);
+  const declaredValue = asInt(p.declaredValue);
+  if (visibleValue !== gt.visibleValue) {
+    failures.push(`auditorVisibleValue ${visibleValue} != ground truth ${gt.visibleValue}`);
+  }
+  if (attestedValue !== gt.totalValue) {
+    failures.push(`attestedValueFloor ${attestedValue} != true total value ${gt.totalValue}`);
+  }
+  if (gt.totalValue - gt.hiddenValue !== gt.visibleValue) {
+    failures.push(
+      `ground truth value is inconsistent: ${gt.totalValue} - ${gt.hiddenValue} != ${gt.visibleValue}`,
+    );
+  }
+  const expectedValueRatio = coverageRatio(declaredValue, attestedValue, gt.visibleValue);
+  if (!numericEquals(p.valueRatio, expectedValueRatio)) {
+    failures.push(`valueRatio ${p.valueRatio} != expected ${expectedValueRatio}`);
+  }
+  const expectedValueSource = denominatorSourceOf(declaredValue, attestedValue, visibleValue);
+  if (p.valueDenominatorSource !== expectedValueSource) {
+    failures.push(
+      `valueDenominatorSource ${p.valueDenominatorSource} != expected ${expectedValueSource}`,
+    );
+  }
+
   // --- attestation coverage ----------------------------------------------
   const attestorCount = asInt(p.attestorCount);
   const expectedAttestorCount = asInt(p.expectedAttestorCount);
@@ -95,13 +128,21 @@ export async function verify(opts: { quiet?: boolean } = {}): Promise<VerifyResu
     publishedRatio: p.ratio,
     expectedRatio,
     denominatorSource: p.denominatorSource,
+    visibleValue,
+    attestedValue,
+    publishedValueRatio: p.valueRatio,
+    expectedValueRatio,
+    valueDenominatorSource: p.valueDenominatorSource,
+    attestorCount,
+    expectedAttestorCount,
     failures,
   };
 
   if (!opts.quiet) {
     if (result.ok) {
       console.log(`VERIFIED scope "${st.scopeTag}": published proof matches ground truth exactly`);
-      console.log(`  hidden ${gt.hidden}  declared ${declared}  attested ${attested}  visible ${visible}  ratio ${p.ratio}`);
+      console.log(`  count: hidden ${gt.hidden}  declared ${declared}  attested ${attested}  visible ${visible}  ratio ${p.ratio}`);
+      console.log(`  value: visible ${visibleValue}  attested ${attestedValue}  ratio ${p.valueRatio} (${p.valueDenominatorSource})`);
     } else {
       console.error(`FAILED scope "${st.scopeTag}":`);
       for (const f of failures) console.error(`  - ${f}`);

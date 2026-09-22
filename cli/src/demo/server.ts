@@ -17,6 +17,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { LEDGER_URL } from "../api.ts";
+import { runIteration, accumulatorFile } from "./accumulator.ts";
 import { runDemo, type RunResult } from "./flow.ts";
 import { PAGE } from "./page.ts";
 import {
@@ -42,6 +43,13 @@ const GLOBAL_MAX = 20;
 const ipHits = new Map<string, number[]>();
 let globalHits: number[] = [];
 let running = false;
+
+// The accumulator yields to real visitors: it is refused while a visitor ran
+// recently, so a judge poking the demo never queues behind a background run.
+const VISITOR_PRIORITY_MS = 90_000;
+let lastVisitorAt = 0;
+const EVAL_TOKEN = process.env.VISUM_EVAL_TOKEN ?? "";
+let evalIterations = 0;
 
 function prune(times: number[], window: number): number[] {
   const cutoff = Date.now() - window;
@@ -126,6 +134,8 @@ const server = createServer((req, res) => {
           availableMb: availableMb() ?? null,
           minAvailableMb: minAvailableMb(),
           busy: running,
+          evalIterations,
+          accumulator: accumulatorFile(),
         }),
         "application/json",
       );
@@ -151,6 +161,7 @@ const server = createServer((req, res) => {
         );
       }
       running = true;
+      lastVisitorAt = Date.now();
       try {
         // Boots the sandbox if this is the first run in a while. Concurrent
         // callers share the one boot.
@@ -187,6 +198,57 @@ const server = createServer((req, res) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`run failed: ${msg}`);
         return send(res, 500, JSON.stringify({ error: "the run failed" }), "application/json");
+      } finally {
+        running = false;
+      }
+    }
+
+    // ---- the accumulator's private endpoint ---------------------------
+    //
+    // Loopback only. It is NOT reachable through the tunnel: any request
+    // Cloudflare proxied carries cf-ray, and those are refused outright. A
+    // shared token is required on top of that. It shares the demo's mutex
+    // and the demo's single cgrouped sandbox, so it can never spawn a second
+    // JVM or run beside a visitor.
+    if (req.method === "POST" && url.pathname === "/internal/eval-iteration") {
+      req.resume();
+      if (req.headers["cf-ray"] !== undefined || req.headers["cf-connecting-ip"] !== undefined) {
+        return send(res, 404, "not found", "text/plain; charset=utf-8");
+      }
+      if (EVAL_TOKEN === "" || req.headers["x-visum-eval"] !== EVAL_TOKEN) {
+        return send(res, 404, "not found", "text/plain; charset=utf-8");
+      }
+      if (Date.now() - lastVisitorAt < VISITOR_PRIORITY_MS) {
+        return send(
+          res,
+          503,
+          JSON.stringify({ error: "yielding to a recent visitor" }),
+          "application/json",
+        );
+      }
+      if (running) {
+        return send(res, 503, JSON.stringify({ error: "busy" }), "application/json");
+      }
+      running = true;
+      try {
+        await ensureSandbox();
+        const seedNum = Date.now();
+        const rec = await runIteration(rng(), seedNum);
+        evalIterations += 1;
+        touch();
+        return send(res, 200, JSON.stringify(rec), "application/json");
+      } catch (err) {
+        if (err instanceof HeadroomError) {
+          return send(
+            res,
+            503,
+            JSON.stringify({ error: "headroom", detail: err.message }),
+            "application/json",
+          );
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`eval iteration failed: ${msg}`);
+        return send(res, 500, JSON.stringify({ error: msg }), "application/json");
       } finally {
         running = false;
       }

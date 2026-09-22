@@ -33,6 +33,7 @@ import {
 } from "../model.ts";
 import { readScope } from "../scope.ts";
 import { readState } from "../state.ts";
+import { sweepScope } from "./sweep.ts";
 
 export type AuditorView = {
   visible: number;
@@ -91,40 +92,6 @@ async function auditorViewOf(auditor: string, scopeTag: string): Promise<Auditor
     hasAttestation: attestations.length > 0,
     canComputeCoverage: scopes.length > 0 || attestations.length > 0,
   };
-}
-
-/** Everything this run created, so it can be cleaned up afterwards. */
-async function sweep(scopeTag: string): Promise<void> {
-  const st = readState();
-  const offset = await ledgerEnd();
-  const parties = [st.operator, ...st.counterparties];
-
-  for (const party of parties) {
-    const events = await activeContracts(party, offset);
-    const mine = events.filter((e) => {
-      const a = e.createArgument as { scopeTag?: string } | undefined;
-      return a?.scopeTag === scopeTag;
-    });
-
-    // The operator archives what it signed; each attestor archives its own.
-    const opOwned = mine.filter(
-      (e) =>
-        isTemplate(e, T.Settlement) ||
-        isTemplate(e, T.ScopeStatement) ||
-        isTemplate(e, T.CoverageProof),
-    );
-    const attested = mine.filter((e) => isTemplate(e, T.PartyAttestation));
-
-    if (party === st.operator && opOwned.length > 0) {
-      await archiveContracts(st.operator, opOwned.map((e) => ({ templateId: e.templateId, contractId: e.contractId })));
-    }
-    for (const e of attested) {
-      const a = e.createArgument as PartyAttestationPayload;
-      if (a.attestor === party) {
-        await archiveContracts(party, [{ templateId: e.templateId, contractId: e.contractId }]);
-      }
-    }
-  }
 }
 
 export async function runDemo(rand: () => number): Promise<RunResult> {
@@ -218,9 +185,9 @@ export async function runDemo(rand: () => number): Promise<RunResult> {
     };
 
     // housekeeping
-    await sweep(scopeA).catch(() => undefined);
+    await sweepScope(scopeA, st).catch(() => undefined);
     process.env.VISUM_DIR = dirB;
-    await sweep(scopeB).catch(() => undefined);
+    await sweepScope(scopeB, st).catch(() => undefined);
     rmSync(dirB, { recursive: true, force: true });
 
     return result;

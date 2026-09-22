@@ -67,6 +67,9 @@ data DenominatorSource
 
 -- | The denominator visum scores against.
 --
+--   Used for both measures: pass counts for count coverage, or minor-unit
+--   sums for value coverage. The three-floor structure is identical.
+--
 --   The operator's declared total is a claim, never truth. Counterparty
 --   attestations bound the true total from below and the operator cannot
 --   suppress them, because the counterparty signs them. The auditor's own
@@ -158,10 +161,19 @@ template Settlement
     counterparty : Party
     payload : Text
     scopeTag : Text
+    -- | The settlement's value in MINOR UNITS (cents, satoshi, pence --
+    --   whatever the scope's currency divides into).
+    --
+    --   An Int rather than a Decimal on purpose. Value coverage is a sum over
+    --   thousands of settlements compared for exact equality against ground
+    --   truth, and minor-unit integers add exactly where Decimals accumulate
+    --   rounding. The ratio derived from them is still a Numeric 10.
+    amount : Int
     disclosed : [Party]
   where
     signatory operator
     observer counterparty, disclosed
+    ensure amount >= 0
 
 -- | The operator's declaration of what the period contains.
 --
@@ -175,6 +187,9 @@ template ScopeStatement
     periodEnd : Time
     templatesInScope : [Text]
     declaredTotal : Int
+    -- | The total value the operator says this scope covers, in minor units.
+    --   A claim, exactly like declaredTotal.
+    declaredValue : Int
     -- | The counterparty set the operator says this scope covers. Declaring
     --   it makes a missing attestation visible: a reader can tell that three
     --   of four counterparties stayed silent, rather than having to assume
@@ -184,7 +199,7 @@ template ScopeStatement
   where
     signatory operator
     observer auditor
-    ensure declaredTotal >= 0
+    ensure declaredTotal >= 0 && declaredValue >= 0
 
 -- | A counterparty's signed count of the settlements it is a stakeholder on.
 --
@@ -200,10 +215,13 @@ template PartyAttestation
     auditor : Party
     scopeTag : Text
     seenCount : Int
+    -- | The value the attestor is a stakeholder on, in minor units. Signed by
+    --   the counterparty, so the operator can neither forge nor suppress it.
+    seenValue : Int
   where
     signatory attestor
     observer auditor, operator
-    ensure seenCount >= 0
+    ensure seenCount >= 0 && seenValue >= 0
 
 -- | The published result.
 --
@@ -243,6 +261,23 @@ template CoverageProof
     --   below, so a proof cannot claim an independent denominator when the
     --   auditor's own count is all that held it up.
     denominatorSource : DenominatorSource
+
+    -- -- value coverage -----------------------------------------------------
+    -- | The same measurement taken over VALUE rather than over count, in
+    --   minor units.
+    --
+    --   This is a second, independent ratio, not a reinterpretation of the
+    --   first. Nine percent of contracts visible means something completely
+    --   different when those nine percent carry ninety-nine percent of the
+    --   value than when they carry one percent of it, and an auditor cares
+    --   about the second number more. Both are published so neither can hide
+    --   behind the other.
+    auditorVisibleValue : Int
+    declaredValue : Int
+    attestedValueFloor : Int
+    valueRatio : Decimal
+    valueDenominatorSource : DenominatorSource
+
     computedAt : Time
   where
     signatory prover
@@ -255,3 +290,15 @@ template CoverageProof
         && expectedAttestorCount == length (dedup expectedAttestors)
         && denominatorSource
              == denominatorSourceOf declaredTotal attestedFloor auditorVisible
+        -- The value ratio gets the same treatment as the count ratio: bound
+        -- to its OWN integers, with its own denominator source. A proof
+        -- cannot publish a flattering value figure, and cannot mislabel
+        -- which floor held the value denominator up, any more than it can for
+        -- the count.
+        && auditorVisibleValue >= 0
+        && declaredValue >= 0
+        && attestedValueFloor >= 0
+        && valueRatio
+             == coverageRatio declaredValue attestedValueFloor auditorVisibleValue
+        && valueDenominatorSource
+             == denominatorSourceOf declaredValue attestedValueFloor auditorVisibleValue

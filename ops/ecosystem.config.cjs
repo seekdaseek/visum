@@ -48,6 +48,12 @@ module.exports = {
         // Tunable here without a redeploy: edit, then pm2 delete + start.
         VISUM_MIN_AVAIL_MB: "1600",
 
+        // Shared with visum-eval. Not a secret in the security sense -- the
+        // endpoint is loopback-only and refuses anything Cloudflare proxied
+        // -- but it stops anything else on the box poking it by accident.
+        VISUM_EVAL_TOKEN: "acc-9f4c2e17b3a84d",
+        VISUM_ACCUMULATOR_FILE: "/opt/visum/eval/accumulator.jsonl",
+
         VISUM_JVM_OPTS:
           "-Xmx320m -Xms96m -XX:MaxMetaspaceSize=384m -XX:ReservedCodeCacheSize=128m -Xss768k",
       },
@@ -59,6 +65,34 @@ module.exports = {
       max_restarts: 10,
       out_file: "/opt/visum/.run/demo.out.log",
       error_file: "/opt/visum/.run/demo.err.log",
+    },
+    {
+      // The long-running acceptance accumulator.
+      //
+      // It owns no sandbox and spawns no JVM: it drives visum-demo's
+      // loopback endpoint, so it inherits that process's cgroup, its
+      // oom_score_adj, its single-run mutex and its headroom pre-flight. It
+      // cannot hurt the other services on this host, and it steps aside for
+      // anyone actually using the live demo.
+      name: "visum-eval",
+      script: "cli/src/eval-runner.ts",
+      interpreter: "node",
+      cwd: "/opt/visum",
+      env: {
+        VISUM_EVAL_TARGET: "http://127.0.0.1:3029",
+        VISUM_EVAL_TOKEN: "acc-9f4c2e17b3a84d",
+        // Bursts, not a continuous loop: continuous would pin the sandbox at
+        // ~960 MB permanently. 20 iterations every 30 minutes is a duty
+        // cycle of a few percent and still ~960 scopes a day.
+        VISUM_EVAL_BURST: "20",
+        VISUM_EVAL_PERIOD_MS: "1800000",
+        VISUM_EVAL_GAP_MS: "1500",
+        VISUM_EVAL_BACKOFF_MS: "120000",
+      },
+      max_memory_restart: "200M",
+      autorestart: true,
+      out_file: "/opt/visum/.run/eval.out.log",
+      error_file: "/opt/visum/.run/eval.err.log",
     },
     {
       name: "visum-tunnel",

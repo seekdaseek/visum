@@ -26,10 +26,14 @@ export async function prove(): Promise<void> {
 
   // The numerator: settlements on which the auditor was actually made a
   // stakeholder, read off each created event's own signatories and observers.
-  const auditorVisible = settlements.filter(({ event }) => isStakeholder(st.auditor, event)).length;
+  const visibleToAuditor = settlements.filter(({ event }) => isStakeholder(st.auditor, event));
+  const auditorVisible = visibleToAuditor.length;
+  // The same stakeholder read, summed over value instead of counted.
+  const auditorVisibleValue = visibleToAuditor.reduce((a, { payload }) => a + asInt(payload.amount), 0);
 
   // The operator's claim.
   const declaredTotal = scopes.reduce((m, s) => Math.max(m, asInt(s.payload.declaredTotal)), 0);
+  const declaredValue = scopes.reduce((m, s) => Math.max(m, asInt(s.payload.declaredValue)), 0);
   const scopeHash = scopes[0]?.payload.scopeHash ?? "";
   const expectedAttestors = [
     ...new Set(scopes.flatMap((s) => s.payload.expectedAttestors)),
@@ -41,10 +45,22 @@ export async function prove(): Promise<void> {
     seenCount: asInt(payload.seenCount),
   }));
   const attestedFloor = attestedFloorFrom(claims);
+  const attestedValueFloor = attestedFloorFrom(
+    attestations.map(({ payload }) => ({
+      attestor: payload.attestor,
+      seenCount: asInt(payload.seenValue),
+    })),
+  );
   const attestors = [...new Set(claims.map((c) => c.attestor))].sort();
 
   const ratio = coverageRatio(declaredTotal, attestedFloor, auditorVisible);
   const denominatorSource = denominatorSourceOf(declaredTotal, attestedFloor, auditorVisible);
+  const valueRatio = coverageRatio(declaredValue, attestedValueFloor, auditorVisibleValue);
+  const valueDenominatorSource = denominatorSourceOf(
+    declaredValue,
+    attestedValueFloor,
+    auditorVisibleValue,
+  );
 
   await createContracts(st.operator, [
     {
@@ -64,6 +80,11 @@ export async function prove(): Promise<void> {
         attestorCount: damlInt(attestors.length),
         expectedAttestorCount: damlInt(expectedAttestors.length),
         denominatorSource,
+        auditorVisibleValue: damlInt(auditorVisibleValue),
+        declaredValue: damlInt(declaredValue),
+        attestedValueFloor: damlInt(attestedValueFloor),
+        valueRatio,
+        valueDenominatorSource,
         computedAt: new Date().toISOString(),
       },
     },
@@ -75,6 +96,8 @@ export async function prove(): Promise<void> {
   console.log(`  attestedFloor  ${attestedFloor}`);
   console.log(`  ratio          ${ratio}`);
   console.log(`  denominator    ${denominatorSource}`);
+  console.log(`  value ratio    ${valueRatio}  (${auditorVisibleValue} / ${Math.max(declaredValue, attestedValueFloor, auditorVisibleValue)} minor units)`);
+  console.log(`  value denom    ${valueDenominatorSource}`);
   console.log(
     `  attested by    ${attestors.length} of ${expectedAttestors.length}` +
       (attestors.length > 0 ? ` (${attestors.map(short).join(", ")})` : ""),
