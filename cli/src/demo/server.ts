@@ -19,7 +19,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { LEDGER_URL } from "../api.ts";
 import { runDemo, type RunResult } from "./flow.ts";
 import { PAGE } from "./page.ts";
-import { bootSeconds, ensureSandbox, sandboxState, touch } from "./sandbox.ts";
+import {
+  availableMb,
+  bootSeconds,
+  ensureSandbox,
+  HeadroomError,
+  minAvailableMb,
+  reconcileOnStartup,
+  sandboxState,
+  touch,
+} from "./sandbox.ts";
 
 const PORT = Number.parseInt(process.env.VISUM_DEMO_PORT ?? "3029", 10);
 const HOST = "127.0.0.1";
@@ -108,6 +117,9 @@ const server = createServer((req, res) => {
           ok: true,
           sandbox: sandboxState(),
           coldStartSeconds: bootSeconds(),
+          availableMb: availableMb() ?? null,
+          minAvailableMb: minAvailableMb(),
+          busy: running,
         }),
         "application/json",
       );
@@ -121,11 +133,14 @@ const server = createServer((req, res) => {
       const limit = rateLimited(clientIp(req));
       if (limit) return send(res, 429, JSON.stringify({ error: limit }), "application/json");
 
+      // Condition 3: exactly one sandbox, ever. A strict mutex, not a rate
+      // limit. The flag is set synchronously before any await, so two
+      // requests arriving in the same tick cannot both pass it.
       if (running) {
         return send(
           res,
-          429,
-          JSON.stringify({ error: "a run is already in flight; try again in a moment" }),
+          503,
+          JSON.stringify({ error: "a run is already in flight; try again in a few seconds" }),
           "application/json",
         );
       }
@@ -146,6 +161,23 @@ const server = createServer((req, res) => {
         touch();
         return send(res, 200, JSON.stringify(result), "application/json");
       } catch (err) {
+        // Condition 4: a headroom refusal is a deliberate, explained decline,
+        // not a crash. The visitor is told plainly.
+        if (err instanceof HeadroomError) {
+          console.warn(`refused to start: ${err.message}`);
+          return send(
+            res,
+            503,
+            JSON.stringify({
+              error:
+                "This host does not have enough free memory to start a ledger right now, " +
+                "so visum is declining to start one rather than risk the other services " +
+                "sharing this machine. Please try again shortly.",
+              headroom: { availableMb: availableMb(), requiredMb: minAvailableMb() },
+            }),
+            "application/json",
+          );
+        }
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`run failed: ${msg}`);
         return send(res, 500, JSON.stringify({ error: "the run failed" }), "application/json");
@@ -158,8 +190,10 @@ const server = createServer((req, res) => {
   })();
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(
-    `visum demo on http://${HOST}:${PORT} (ledger ${LEDGER_URL}, sandbox started on demand)`,
-  );
+void reconcileOnStartup().then(() => {
+  server.listen(PORT, HOST, () => {
+    console.log(
+      `visum demo on http://${HOST}:${PORT} (ledger ${LEDGER_URL}, sandbox started on demand)`,
+    );
+  });
 });
