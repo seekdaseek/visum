@@ -1,5 +1,6 @@
 .daml/
 .visum/
+.run/
 node_modules/
 dist/
 *.dar

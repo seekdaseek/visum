@@ -297,6 +297,68 @@ attests, or the eval's expected value must be computed from the attested
 universe rather than from `n`. This is a property of the seeder, not a bug in
 the prover.
 
+## The live demo on solwatch — measured
+
+Deployed 2026-09-22. `visum.ochinimus.app` → dedicated cloudflared tunnel
+`visum` (`80cef444-…`) → `localhost:3029`. No nginx: the other tunnel-backed
+hosts on that box (cassum, overhang) do not use one either.
+
+### Memory, measured ON the VPS under load
+
+| | |
+|---|---|
+| Canton JVM peak RSS | **960 MB** |
+| visum-demo peak RSS | 95 MB |
+| cgroup `memory.current` peak | 1022 MB |
+| cgroup `memory.peak` | 1024 MB — i.e. pinned at the cap |
+| `oom_kill` during real runs | **0** |
+| idle cost (sandbox stopped) | ~35–95 MB, node only |
+| cold start / warm run | ~30 s / ~3 s |
+
+The 62–137 MB figure from the first session was an **idle** sample and is
+wrong for planning. Under load it is ~960 MB.
+
+### Why the cgroup and not -Xmx
+
+`-Xmx320m` still produced 914 MB RSS, because metaspace, code cache, thread
+stacks and direct buffers are outside the heap. The control is the kernel:
+
+    systemd-run --scope --collect --unit=visum-sandbox.scope \
+      -p MemoryMax=1G -p MemorySwapMax=0
+
+Proven to bite. With `MemoryMax=256M` the kernel logged:
+
+    Memory cgroup out of memory: Killed process 3154282 (java) ...
+      oom_score_adj:1000
+
+That is a *cgroup* OOM, contained: PM2 stayed at 39 procs / 6 restarts and
+every neighbour answered 200 throughout.
+
+Canton reads its cgroup limit and warns when `-Xmx` exceeds half of it, so a
+too-small cap shows up as a boot warning before the kill.
+
+### Traps hit while deploying
+
+- **`java` does not read `JAVA_OPTS`.** It is a wrapper-script convention.
+  Use `_JAVA_OPTIONS`, which the JVM reads and echoes on startup
+  (`Picked up _JAVA_OPTIONS: …`). Verify with `jcmd <pid> VM.flags`.
+- **Metaspace below ~384m kills Canton on boot** with a Metaspace
+  OutOfMemoryError from the pekko actor system.
+- **`/tmp` on solwatch is a 1.9 GB tmpfs.** The dpm installer extracts ~2.5 GB
+  there and fails with "No space left on device" while `df /` shows 47 GB
+  free — and being tmpfs, it eats RAM on the way. Install with
+  `TEMPDIR=/var/tmp/dpm-install`. The installer prints "Successfully installed
+  Dpm" even when the extraction failed, so check `dpm version` afterwards.
+- **`cloudflared tunnel route dns <name> <host>` can bind the CNAME to the
+  wrong tunnel.** Passing the name `visum` wrote the record against
+  `7de53b95…`, which is *solquest-api*. Always pass the **UUID**, and read the
+  `tunnelID=` in the output back before believing it. Fix with
+  `--overwrite-dns` and the UUID.
+- systemd `OOMScoreAdjust` is an exec property and does **not** apply to
+  scopes. Set `oom_score_adj` from an inner `sh -c` that writes
+  `/proc/self/oom_score_adj` and then `exec`s; the value is inherited across
+  fork and preserved across exec, so the JVM carries it.
+
 ## Repo conventions
 
 - Commits are authored as **seekdaseek** only. No `Co-Authored-By`, no

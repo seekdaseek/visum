@@ -6,6 +6,11 @@ the answer on the ledger as a signed coverage ratio.
 Built for HackCanton League Season 3, track Real-World Assets (RWA) & Business
 Workflows. MIT licensed.
 
+**Live demo: https://visum.ochinimus.app** — runs the whole flow server side on
+a real Canton sandbox and shows you the two ledgers an auditor cannot tell
+apart. The first run after a quiet spell waits about 30 seconds while the
+sandbox boots.
+
 ## The problem
 
 On Canton a party sees only contracts where it is a stakeholder. Excluded
