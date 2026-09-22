@@ -32,15 +32,21 @@ module.exports = {
         // outside it. MemorySwapMax=0 keeps this off a swapfile that is
         // already 1.1 GB into its 2 GB.
         VISUM_REQUIRE_CGROUP: "1",
-        VISUM_MEMORY_MAX: "1G",
+        VISUM_MEMORY_MAX: "1280M",
         VISUM_SCOPE_UNIT: "visum-sandbox.scope",
 
         // --- condition 2: visum is the OOM victim, never anything else ----
         VISUM_OOM_SCORE_ADJ: "1000",
 
         // --- condition 4: refuse to start below this much free memory -----
+        // The floor MUST exceed the cgroup cap plus this process plus margin,
+        // or the guard is decorative: admitting a run when only 1200 MB is
+        // free while the cgroup may claim 1280 MB is incoherent.
+        //   1280 (cap) + ~100 (this node process) + ~200 (margin) = 1600
+        // Host sits near 1930 MB available, so 1600 still admits runs and
+        // refuses when the box is loaded.
         // Tunable here without a redeploy: edit, then pm2 delete + start.
-        VISUM_MIN_AVAIL_MB: "1200",
+        VISUM_MIN_AVAIL_MB: "1600",
 
         VISUM_JVM_OPTS:
           "-Xmx320m -Xms96m -XX:MaxMetaspaceSize=384m -XX:ReservedCodeCacheSize=128m -Xss768k",

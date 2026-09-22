@@ -5,8 +5,12 @@
   "type": "module",
   "license": "MIT",
   "description": "visum CLI: seed, declare, attest, prove, audit, verify against a Canton JSON Ledger API",
-  "engines": { "node": ">=22.6" },
-  "bin": { "visum": "./src/visum.ts" },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "bin": {
+    "visum": "./src/visum.ts"
+  },
   "scripts": {
     "visum": "node src/visum.ts",
     "typecheck": "tsc --noEmit",
@@ -16,8 +20,9 @@
     "openapi-fetch": "^0.13.5"
   },
   "devDependencies": {
+    "@types/node": "^22.10.7",
     "openapi-typescript": "^7.6.1",
-    "typescript": "^5.7.3",
-    "@types/node": "^22.10.7"
+    "playwright": "^1.63.0",
+    "typescript": "^5.7.3"
   }
 }

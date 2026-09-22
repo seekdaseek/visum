@@ -76,8 +76,14 @@ function send(res: ServerResponse, code: number, body: string, type: string): vo
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
+    // connect-src MUST be listed. It does not fall back to anything
+    // permissive -- with only `default-src 'none'` it inherits 'none', and
+    // the page's own fetch('/api/run') is blocked before it leaves the
+    // browser. curl does not enforce CSP, so a curl-only check cannot see
+    // this; scripts/check-live.sh asserts the header and a headless browser
+    // clicks the real button.
     "Content-Security-Policy":
-      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   });
   res.end(body);
 }

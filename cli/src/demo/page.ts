@@ -143,6 +143,15 @@ export const PAGE = String.raw`<!doctype html>
 </div>
 
 <script>
+// If a CSP directive ever blocks the page's own fetch again, say so out loud
+// rather than letting it masquerade as an unreachable server.
+document.addEventListener('securitypolicyviolation', (e) => {
+  console.error('visum: CSP blocked', e.effectiveDirective, e.blockedURI);
+  const st = document.getElementById('status');
+  if (st) st.textContent =
+    'blocked by this page\u2019s own Content-Security-Policy (' + e.effectiveDirective + ')';
+});
+
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const rows = (el, pairs) => {
@@ -157,12 +166,29 @@ $('go').addEventListener('click', async () => {
   st.innerHTML = 'booting a scope and committing contracts <span class="spin">…</span>';
   try {
     const res = await fetch('/api/run', { method:'POST' });
-    const d = await res.json();
-    if (!res.ok) { st.textContent = d.error || 'the run failed'; btn.disabled = false; return; }
+    // Read as text first. A Cloudflare 502/524 returns an HTML body, and
+    // res.json() on that throws -- which previously fell into the catch
+    // below and reported "could not reach the demo server", which was false
+    // and hid the real status code.
+    const body = await res.text();
+    let d = null;
+    try { d = body ? JSON.parse(body) : null; } catch (parseErr) {
+      console.error('visum: non-JSON response', res.status, body.slice(0, 300));
+      st.textContent = 'unexpected response from the server (HTTP ' + res.status + ')';
+      btn.disabled = false;
+      return;
+    }
+    if (!res.ok) {
+      st.textContent = (d && d.error) || ('the run failed (HTTP ' + res.status + ')');
+      btn.disabled = false;
+      return;
+    }
     render(d);
     st.textContent = 'done in ' + (d.elapsedMs/1000).toFixed(1) + 's';
   } catch (e) {
-    st.textContent = 'could not reach the demo server';
+    // Never swallow this. A silent catch is what hid the CSP block.
+    console.error('visum: /api/run failed', e);
+    st.textContent = 'could not reach the demo server: ' + ((e && e.message) || e);
   }
   btn.disabled = false;
 });
