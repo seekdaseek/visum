@@ -12,7 +12,7 @@
 set -eu
 
 HOST="${VISUM_HOST:-solwatch}"
-REMOTE="${VISUM_REMOTE_FILE:-/opt/visum/eval/accumulator.jsonl}"
+REMOTE="${VISUM_REMOTE_FILE:-/opt/visum-data/accumulator.jsonl}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 LOCAL="$ROOT/eval/accumulator.jsonl"
 TMP=$(mktemp)

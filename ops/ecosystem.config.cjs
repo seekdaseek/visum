@@ -52,7 +52,11 @@ module.exports = {
         // endpoint is loopback-only and refuses anything Cloudflare proxied
         // -- but it stops anything else on the box poking it by accident.
         VISUM_EVAL_TOKEN: "acc-9f4c2e17b3a84d",
-        VISUM_ACCUMULATOR_FILE: "/opt/visum/eval/accumulator.jsonl",
+        // Deliberately OUTSIDE the git working tree. The repo copy at
+        // eval/accumulator.jsonl is the committed archive; this is the live
+        // append target. Keeping them the same path made `git pull` on the
+        // box collide with the file the accumulator was writing.
+        VISUM_ACCUMULATOR_FILE: "/opt/visum-data/accumulator.jsonl",
 
         VISUM_JVM_OPTS:
           "-Xmx320m -Xms96m -XX:MaxMetaspaceSize=384m -XX:ReservedCodeCacheSize=128m -Xss768k",

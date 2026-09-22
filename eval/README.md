@@ -27,3 +27,11 @@ ever could). Fields:
 | `elapsedMs` | wall clock |
 
 Summarise with `scripts/accumulator-report.sh`.
+
+The file here is the **committed archive**. The accumulator appends to
+`/opt/visum-data/accumulator.jsonl` on the host, outside the git working
+tree, and `scripts/sync-accumulator.sh` copies new rows across and commits
+them. Keeping the live target inside the repo made `git pull` on the host
+collide with the file being written. The sync refuses unless the archive is
+a byte-exact prefix of the live file, so append-only is enforced rather than
+assumed.
