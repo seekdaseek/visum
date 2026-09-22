@@ -62,6 +62,10 @@ export type RunResult = {
   missing: string[];
   ratio: string;
   denominatorSource: string;
+  visibleValue: number;
+  attestedValue: number;
+  valueRatio: string;
+  valueDenominatorSource: string;
   concealment: boolean;
   verified: boolean;
   verifyFailures: string[];
@@ -176,6 +180,10 @@ export async function runDemo(rand: () => number): Promise<RunResult> {
       missing: missingAttestors(expected, actual).map(short),
       ratio: proof.ratio,
       denominatorSource: proof.denominatorSource,
+      visibleValue: asInt(proof.auditorVisibleValue),
+      attestedValue: asInt(proof.attestedValueFloor),
+      valueRatio: proof.valueRatio,
+      valueDenominatorSource: proof.valueDenominatorSource,
       concealment: asInt(proof.attestedFloor) > asInt(proof.declaredTotal),
       verified: v.ok,
       verifyFailures: v.failures,

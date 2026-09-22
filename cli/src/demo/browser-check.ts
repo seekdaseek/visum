@@ -97,6 +97,13 @@ async function main(): Promise<number> {
       bad(`rendered ratio "${ratio}" is not a Numeric 10 value`);
     }
 
+    const vRatio = (await page.locator("#valueRatio").textContent())?.trim() ?? "";
+    if (/^[0-9]+\.[0-9]{10}$/.test(vRatio)) {
+      ok(`rendered value ratio ${vRatio} (Numeric 10)`);
+    } else {
+      bad(`rendered value ratio "${vRatio}" is not a Numeric 10 value`);
+    }
+
     // The three things the demo exists to show must be on screen.
     const outHidden = await page.locator("#out").evaluate((el) => (el as { hidden: boolean }).hidden);
     outHidden ? bad("results section still hidden") : ok("results section visible");
@@ -115,6 +122,11 @@ async function main(): Promise<number> {
     verifyText.includes("VERIFIED")
       ? ok("verify says VERIFIED against ground truth")
       : bad(`verify did not report VERIFIED: "${verifyText.slice(0, 80)}"`);
+
+    const vVerdict = (await page.locator("#valueVerdict").textContent()) ?? "";
+    vVerdict.length > 20
+      ? ok("value-vs-count verdict rendered")
+      : bad("value verdict missing");
 
     const pills = (await page.locator("#ratioPills").textContent()) ?? "";
     pills.includes("denominator:")

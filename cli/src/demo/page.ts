@@ -39,6 +39,10 @@ export const PAGE = String.raw`<!doctype html>
   .pill.bad  { color:var(--bad);  border-color:#5c2020 }
   .pill.warn { color:var(--warn); border-color:#5a4415 }
   .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px }
+  .twoup { display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start }
+  @media (max-width:700px){ .twoup{grid-template-columns:1fr; gap:10px} }
+  .lbl { font-family:var(--mono); font-size:11px; text-transform:uppercase;
+         letter-spacing:.8px; color:var(--dim); margin-bottom:2px }
   @media (max-width:700px){ .cols{grid-template-columns:1fr} td.k{width:150px} }
   .world { border:1px solid var(--line); border-radius:8px; padding:12px 14px }
   .world h3 { font-size:12px; margin:0 0 8px; color:var(--dim); text-transform:uppercase;
@@ -108,7 +112,17 @@ export const PAGE = String.raw`<!doctype html>
 
     <div class="card">
       <h2>3 &nbsp;The published CoverageProof</h2>
-      <div class="big" id="ratio"></div>
+      <div class="twoup">
+        <div>
+          <div class="lbl">coverage by count</div>
+          <div class="big" id="ratio"></div>
+        </div>
+        <div>
+          <div class="lbl">coverage by value</div>
+          <div class="big" id="valueRatio"></div>
+        </div>
+      </div>
+      <div class="verdict" id="valueVerdict" style="margin:12px 0"></div>
       <div id="ratioPills" style="margin:6px 0 14px"></div>
       <table><tbody id="proof"></tbody></table>
     </div>
@@ -226,11 +240,31 @@ function render(d) {
     : 'projections differed — see the log';
 
   $('ratio').textContent = d.ratio;
+  $('valueRatio').textContent = d.valueRatio;
+
+  // The point of publishing both: they can disagree sharply, and the value
+  // number is the one an auditor actually cares about.
+  const c = parseFloat(d.ratio), vv = parseFloat(d.valueRatio);
+  const pct = (x) => (x * 100).toFixed(1) + '%';
+  const gap = Math.abs(c - vv);
+  $('valueVerdict').innerHTML = gap < 0.02
+    ? '<strong>The two measures agree here</strong> (' + esc(pct(c)) + ' by count, ' +
+      esc(pct(vv)) + ' by value). They often do not &mdash; run it again.'
+    : (vv < c
+        ? '<strong>Count coverage flatters this ledger.</strong> ' + esc(pct(c)) +
+          ' of the contracts are visible but only ' + esc(pct(vv)) + ' of the value. ' +
+          'The withheld settlements are the expensive ones.'
+        : '<strong>Value coverage is the stronger number here.</strong> Only ' + esc(pct(c)) +
+          ' of the contracts are visible, but they carry ' + esc(pct(vv)) + ' of the value. ' +
+          'What was withheld is small change.') +
+      ' Nine percent of contracts means nothing until you know whose nine percent.';
   const src = d.denominatorSource;
   $('ratioPills').innerHTML =
     pill('attested by ' + d.attestors + ' of ' + d.expectedAttestors,
          d.attestors === d.expectedAttestors ? 'good' : 'warn') + ' ' +
-    pill('denominator: ' + src, src === 'AttestedFloor' ? 'good' : 'warn') +
+    pill('denominator: ' + src, src === 'AttestedFloor' ? 'good' : 'warn') + ' ' +
+    pill('value denominator: ' + d.valueDenominatorSource,
+         d.valueDenominatorSource === 'AttestedFloor' ? 'good' : 'warn') +
     (d.concealment ? ' ' + pill('concealment signal','bad') : '');
 
   rows($('proof'), [
@@ -244,8 +278,14 @@ function render(d) {
           : ' &mdash; the operator&rsquo;s own claim, corroborated by nobody')],
     ['attestors', d.attestors + ' of ' + d.expectedAttestors +
         (d.missing.length ? ' &nbsp;(silent: ' + esc(d.missing.join(', ')) + ')' : '')],
-    ['ratio', '<strong>' + esc(d.ratio) + '</strong> = ' + d.visible + ' / ' +
+    ['ratio (count)', '<strong>' + esc(d.ratio) + '</strong> = ' + d.visible + ' / ' +
         Math.max(d.declaredTotal, d.attestedFloor, d.visible)],
+    ['auditorVisibleValue', d.visibleValue.toLocaleString() + ' minor units'],
+    ['attestedValueFloor', d.attestedValue.toLocaleString() + ' minor units'],
+    ['value denominator source', esc(d.valueDenominatorSource)],
+    ['ratio (value)', '<strong>' + esc(d.valueRatio) + '</strong> = ' +
+        d.visibleValue.toLocaleString() + ' / ' +
+        Math.max(d.attestedValue, d.visibleValue).toLocaleString()],
   ]);
 
   rows($('verify'), [
