@@ -69,7 +69,7 @@ Two properties make the proof worth reading:
 Built and proven:
 
 - The four templates, and the coverage arithmetic as pure functions.
-- A Daml Script suite of 16 tests that **asserts** rather than prints, run
+- A Daml Script suite of 21 tests that **asserts** rather than prints, run
   against a real in-process ledger. See [Tests](#tests).
 
 - The TypeScript CLI: `seed`, `declare`, `attest`, `prove`, `audit`, `verify`.
@@ -152,7 +152,7 @@ the prover was caught in all twenty runs with exit 1.
 
 ## Tests
 
-`cd test && dpm test`. Sixteen tests, all asserting:
+`cd test && dpm test`. Twenty-one tests, all asserting:
 
 | Script | What it pins down |
 |---|---|
@@ -174,6 +174,9 @@ the prover was caught in all twenty runs with exit 1.
 | `testRatioCanExceedOneUnderPartialAttestation` | the ratio is capped at 1.0, and the proof names `AuditorVisible` as the denominator source when the cap is what produced it |
 | `testCannotClaimIndependentDenominator` | a proof labelling an uncorroborated 1.0 as counterparty-backed is rejected by the ledger at commit time |
 | `testDenominatorSourceTieBreaking` | ties resolve toward the strongest corroboration, so `AuditorVisible` is named only on a strict excess |
+| `testValueCoverageDivergesFromCountCoverage` | ten settlements, one worth 1,000,000 minor units and nine worth 100: disclosing only the big one reads 0.10 by count and 0.999 by value, disclosing only the nine small ones reads 0.90 by count and under 0.01 by value, so count coverage alone ranks the two the wrong way round |
+| `testForgedValueRatioRejected` | a proof whose value ratio does not follow from its own integers (1.0, 0.0 or 0.91), or that labels the value denominator `AuditorVisible` when the attested floor holds it up, is rejected at commit; the honest proof commits |
+| `testValueDenominatorSourceIsIndependent` | with no scope statement and no attestation, the value denominator rests on `AuditorVisible` and reads exactly 1.0, flagged the same way as an uncorroborated count |
 
 The prover's signature is
 `deriveCoverage : Party -> Party -> Text -> Script Derived`. It takes no `Int`,
