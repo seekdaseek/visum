@@ -11,6 +11,8 @@ a real Canton sandbox and shows you the two ledgers an auditor cannot tell
 apart. The first run after a quiet spell waits about 30 seconds while the
 sandbox boots.
 
+Demo video, 2:15: https://youtu.be/gv3qGSeT1r4
+
 ## The problem
 
 On Canton a party sees only contracts where it is a stakeholder. Excluded
