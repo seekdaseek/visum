@@ -31,8 +31,11 @@ module.exports = {
         // capped, because metaspace, code cache and thread stacks sit
         // outside it. MemorySwapMax=0 keeps this off a swapfile that is
         // already 1.1 GB into its 2 GB.
+        // 1G is the cap measured under real runs on this host (NOTES.md,
+        // "The live demo on solwatch — measured"): Canton JVM peak RSS
+        // 960 MB, cgroup memory.peak 1024 MB, oom_kill 0.
         VISUM_REQUIRE_CGROUP: "1",
-        VISUM_MEMORY_MAX: "1280M",
+        VISUM_MEMORY_MAX: "1G",
         VISUM_SCOPE_UNIT: "visum-sandbox.scope",
 
         // --- condition 2: visum is the OOM victim, never anything else ----
@@ -40,13 +43,16 @@ module.exports = {
 
         // --- condition 4: refuse to start below this much free memory -----
         // The floor MUST exceed the cgroup cap plus this process plus margin,
-        // or the guard is decorative: admitting a run when only 1200 MB is
-        // free while the cgroup may claim 1280 MB is incoherent.
-        //   1280 (cap) + ~100 (this node process) + ~200 (margin) = 1600
-        // Host sits near 1930 MB available, so 1600 still admits runs and
-        // refuses when the box is loaded.
+        // or the guard is decorative: admitting a run when less is free than
+        // the cgroup may claim is incoherent.
+        //   1024 (1G cap) + ~100 (this node process) + ~200 (margin) = 1324,
+        //   rounded to 1330
+        // Measured on Oct 5: the host had 1343 to 1716 MB available (it sat
+        // near 1930 when the demo went live on Sep 22), so the old floor of
+        // 1600 turned visitors away. 1330 admits runs across that range and
+        // still refuses when the box is loaded.
         // Tunable here without a redeploy: edit, then pm2 delete + start.
-        VISUM_MIN_AVAIL_MB: "1600",
+        VISUM_MIN_AVAIL_MB: "1330",
 
         // Shared with visum-eval. Not a secret in the security sense -- the
         // endpoint is loopback-only and refuses anything Cloudflare proxied
